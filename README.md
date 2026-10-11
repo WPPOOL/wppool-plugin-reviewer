@@ -17,48 +17,59 @@ Comprehensive WordPress plugin reviewer for WP.org compliance, security, and cod
 
 ## Installation
 
-### Option 1: Install Script (Recommended)
+### Option 1: Git Clone (Recommended — supports auto-update)
 
+Clone directly into Claude Code skills directory. Skill auto-checks for updates on every run.
+
+**Mac/Linux:**
 ```bash
-# Clone repo
-git clone https://github.com/WPPOOL/wppool-plugin-reviewer.git
+# Account-level (available in ALL projects)
+git clone https://github.com/WPPOOL/wppool-plugin-reviewer.git ~/.claude-account2/skills/wppool-plugin-reviewer
 
-# Run install script
-cd wppool-plugin-reviewer
-./install.sh
+# OR project-level (current project only)
+git clone https://github.com/WPPOOL/wppool-plugin-reviewer.git ./.claude/skills/wppool-plugin-reviewer
 ```
 
-### Option 2: Manual Install
+**Windows (PowerShell):**
+```powershell
+# Account-level
+git clone https://github.com/WPPOOL/wppool-plugin-reviewer.git "$env:USERPROFILE\.claude-account2\skills\wppool-plugin-reviewer"
 
-Copy skill folder to Claude Code skills directory:
+# OR project-level
+git clone https://github.com/WPPOOL/wppool-plugin-reviewer.git ".\.claude\skills\wppool-plugin-reviewer"
+```
+
+> **Auto-update**: When installed via git clone, skill checks for updates at the start of every audit. If new version available, it asks to pull before proceeding.
+
+### Option 2: Install Script
+
+```bash
+# Clone repo first
+git clone https://github.com/WPPOOL/wppool-plugin-reviewer.git
+cd wppool-plugin-reviewer
+
+# Mac/Linux
+./install.sh
+
+# Windows (PowerShell)
+.\install.ps1
+```
+
+> Note: Install script copies files (no .git), so auto-update won't work. Use Option 1 for auto-update.
+
+### Option 3: Manual Copy
 
 **Windows:**
 ```powershell
-# Copy to account-level skills (available in all projects)
 Copy-Item -Recurse -Force ".\wppool-plugin-reviewer" "$env:USERPROFILE\.claude-account2\skills\wppool-plugin-reviewer"
-
-# OR copy to project-level skills (available only in current project)
-Copy-Item -Recurse -Force ".\wppool-plugin-reviewer" ".\.claude\skills\wppool-plugin-reviewer"
 ```
 
 **Mac/Linux:**
 ```bash
-# Account-level (all projects)
 cp -r ./wppool-plugin-reviewer ~/.claude-account2/skills/wppool-plugin-reviewer
-
-# OR project-level (current project only)
-cp -r ./wppool-plugin-reviewer ./.claude/skills/wppool-plugin-reviewer
 ```
 
-### Option 3: Direct Clone to Skills Directory
-
-```bash
-# Account-level
-git clone https://github.com/WPPOOL/wppool-plugin-reviewer.git ~/.claude-account2/skills/wppool-plugin-reviewer
-
-# OR project-level
-git clone https://github.com/WPPOOL/wppool-plugin-reviewer.git ./.claude/skills/wppool-plugin-reviewer
-```
+> Note: Manual copy has no auto-update. Use Option 1 for auto-update.
 
 ## Verify Installation
 
@@ -192,12 +203,25 @@ wppool-plugin-reviewer/
 
 ## Updating
 
-Pull latest and re-run install:
+### Auto-Update (Git Clone install)
+
+If installed via git clone (Option 1), skill auto-checks for updates every time it runs. When update found, it asks before pulling.
+
+You can also manually update anytime:
+
+```bash
+cd ~/.claude-account2/skills/wppool-plugin-reviewer
+git pull
+```
+
+### Manual Update (Script/Copy install)
+
+Re-run install script or copy files again:
 
 ```bash
 cd wppool-plugin-reviewer
 git pull
-./install.sh
+./install.sh   # or .\install.ps1 on Windows
 ```
 
 ## Contributing

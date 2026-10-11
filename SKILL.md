@@ -49,6 +49,42 @@ patterns, WPPOOL-specific tech debt, and a master pre-submission gate**.
 
 ## Execution Pipeline
 
+### PRE-STEP — Auto-Update Check
+
+Before any audit, check if skill has updates available:
+
+```bash
+# Detect skill install directory (where this SKILL.md lives)
+SKILL_DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
+# Fallback: check common locations
+# Mac/Linux: ~/.claude-account2/skills/wppool-plugin-reviewer
+# Windows: %USERPROFILE%\.claude-account2\skills\wppool-plugin-reviewer
+
+# Only run if installed via git clone (has .git directory)
+if [ -d "$SKILL_DIR/.git" ]; then
+    cd "$SKILL_DIR"
+    git fetch origin --quiet 2>/dev/null
+    LOCAL=$(git rev-parse HEAD 2>/dev/null)
+    REMOTE=$(git rev-parse origin/master 2>/dev/null)
+    if [ "$LOCAL" != "$REMOTE" ]; then
+        echo "⚡ WPPOOL Plugin Reviewer update available!"
+        echo "   Run: cd $SKILL_DIR && git pull"
+        echo "   Or auto-pull now? (skill will update and continue)"
+        # Auto-pull if user confirms or --auto-update flag
+        git pull origin master --quiet 2>/dev/null
+        echo "   ✅ Updated to latest version."
+    fi
+fi
+```
+
+**Claude Code implementation**: At skill start, run these checks silently:
+1. Find skill directory from knowledge file paths
+2. If `.git` exists in skill dir, run `git -C <skill-dir> fetch origin` (silent, 5s timeout)
+3. Compare `git -C <skill-dir> rev-parse HEAD` vs `git -C <skill-dir> rev-parse origin/master`
+4. If different: notify user "Update available for wppool-plugin-reviewer. Pull now? (y/n)"
+5. If user says yes (or `--auto-update` flag): run `git -C <skill-dir> pull origin master`
+6. If fetch fails (no internet, private repo): skip silently, proceed with current version
+
 ### STEP 0 — Setup
 
 1. Detect plugin root from argument or open file context
