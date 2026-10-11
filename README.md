@@ -21,7 +21,7 @@ Comprehensive WordPress plugin reviewer for WP.org compliance, security, and cod
 
 ```bash
 # Clone repo
-git clone https://github.com/AjeeSoftware/wppool-plugin-reviewer.git
+git clone https://github.com/WPPOOL/wppool-plugin-reviewer.git
 
 # Run install script
 cd wppool-plugin-reviewer
@@ -54,10 +54,10 @@ cp -r ./wppool-plugin-reviewer ./.claude/skills/wppool-plugin-reviewer
 
 ```bash
 # Account-level
-git clone https://github.com/AjeeSoftware/wppool-plugin-reviewer.git ~/.claude-account2/skills/wppool-plugin-reviewer
+git clone https://github.com/WPPOOL/wppool-plugin-reviewer.git ~/.claude-account2/skills/wppool-plugin-reviewer
 
 # OR project-level
-git clone https://github.com/AjeeSoftware/wppool-plugin-reviewer.git ./.claude/skills/wppool-plugin-reviewer
+git clone https://github.com/WPPOOL/wppool-plugin-reviewer.git ./.claude/skills/wppool-plugin-reviewer
 ```
 
 ## Verify Installation
