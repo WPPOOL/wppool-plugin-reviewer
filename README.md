@@ -205,7 +205,16 @@ wppool-plugin-reviewer/
 
 ### Auto-Update (Git Clone install)
 
-If installed via git clone (Option 1), skill auto-checks for updates every time it runs. When update found, it asks before pulling.
+If installed via git clone (Option 1), skill auto-checks for updates every time it runs:
+
+1. On each `/wppool-plugin-reviewer` run, Claude checks if `.git` exists in skill directory
+2. Runs `git fetch origin` silently (5s timeout)
+3. Compares local HEAD vs origin/master
+4. If update available → asks "Update available for wppool-plugin-reviewer. Pull now?"
+5. User confirms → Claude runs `git pull`, continues audit with latest version
+6. No internet or no `.git` → skips silently, proceeds with current version
+
+**How it works:** This isn't a background daemon. Claude Code (the AI) reads the skill instructions and executes git commands at the start of each audit. Knowledge files (grep patterns, closure cases, guidelines) load fresh after pull. SKILL.md structural changes take effect next session.
 
 You can also manually update anytime:
 
@@ -216,7 +225,7 @@ git pull
 
 ### Manual Update (Script/Copy install)
 
-Re-run install script or copy files again:
+No auto-update (no `.git` directory). Re-run install script or copy files again:
 
 ```bash
 cd wppool-plugin-reviewer
