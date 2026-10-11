@@ -233,14 +233,151 @@ git pull
 ./install.sh   # or .\install.ps1 on Windows
 ```
 
+## GitHub Actions: Automated PR Compliance Check
+
+Automatically block PRs that violate WP.org rules + security standards.
+
+### Quick Setup (per plugin repo)
+
+1. Copy template to your plugin repo:
+
+```bash
+mkdir -p .github/workflows
+curl -o .github/workflows/wporg-compliance.yml \
+  https://raw.githubusercontent.com/WPPOOL/wppool-plugin-reviewer/main/templates/pr-check.yml
+```
+
+2. Edit `.github/workflows/wporg-compliance.yml` and change `plugin-text-domain` to your plugin slug
+
+3. Commit and push
+
+4. (Recommended) In repo Settings → Branches → Branch protection rules, add "Compliance Gate" as required status check
+
+### What It Checks on Every PR
+
+| # | Check | Type | Blocks PR? |
+|---|---|---|---|
+| 1 | PHPCS + WordPress Coding Standards | Deterministic | Yes (errors) |
+| 2 | Trialware / Guideline 5 (is_pro gates) | Grep | Yes |
+| 3 | External services without readme disclosure | Grep | Yes |
+| 4 | Remote JS/CSS loading | Grep | Yes |
+| 5 | Unsanitized input ($_POST/$_GET) | Grep | Yes |
+| 6 | Missing nonce on AJAX handlers | Grep | Yes |
+| 7 | REST routes without permission_callback | Grep | Yes |
+| 8 | SQL queries without $wpdb->prepare() | Grep | Yes |
+| 9 | Missing ABSPATH guard | Grep | Yes |
+| 10 | Custom plugin updater | Grep | Yes |
+| 11 | Forbidden files (zip, exe, phar) | Grep | Yes |
+| 12 | Readme issues (stable tag, tags count) | Grep | Yes |
+| 13 | ALLOW_UNFILTERED_UPLOADS | Grep | Yes |
+| 14 | Code obfuscation | Grep | Yes |
+| 15 | Appsero SDK issues | Grep | Yes |
+| 16 | Headway widget undisclosed | Grep | Warning |
+| 17 | Localhost references | Grep | Warning |
+| 18 | register_setting without sanitize_callback | Grep | Yes |
+| 19 | Unescaped output (echo $var) | Grep | Warning |
+| 20 | Tracking without opt-in | Grep | Warning |
+
+### PR Comment Format
+
+Bot posts detailed comment on every PR:
+
+```
+## 🚫 WP.org Compliance Check
+
+| Metric | Count |
+|---|---|
+| Blockers | 3 |
+| Warnings | 2 |
+| Info | 0 |
+
+### 🚫 Blockers (will cause WP.org closure)
+| Category | File | Issue | Fix |
+|---|---|---|---|
+| G5-Trialware | `src/settings.php:42` | License check gates save | Remove gate; use apply_filters() |
+| Security-Input | `src/ajax.php:18` | Unsanitized $_POST | sanitize_text_field(wp_unslash()) |
+...
+```
+
+### Configuration Options
+
+| Option | Default | Description |
+|---|---|---|
+| `plugin-dir` | `.` | Plugin directory (if not repo root) |
+| `php-version` | `8.0` | PHP version for PHPCS |
+| `plugin-text-domain` | `''` | Plugin slug for prefix checks |
+| `fail-on-warnings` | `false` | Also block PR on warnings |
+
+### Adding to All WPPOOL Plugins
+
+Run this for each plugin repo:
+
+```bash
+# List of all free plugin repos
+REPOS=(
+  "wp-dark-mode"
+  "flavor"
+  "flavor-jepordi-addon"
+  # ... add more
+)
+
+for repo in "${REPOS[@]}"; do
+  cd /path/to/$repo
+  mkdir -p .github/workflows
+  cp /path/to/wppool-plugin-reviewer/templates/pr-check.yml .github/workflows/wporg-compliance.yml
+  # Update text domain
+  sed -i "s/your-plugin/$repo/g" .github/workflows/wporg-compliance.yml
+  git add .github/workflows/wporg-compliance.yml
+  git commit -m "Add WP.org compliance PR check"
+  git push
+  cd ..
+done
+```
+
+### Branch Protection Setup
+
+To make the check mandatory (block merge on failure):
+
+1. Go to repo → Settings → Branches
+2. Add/edit branch protection rule for `main`/`master`
+3. Check "Require status checks to pass before merging"
+4. Search and add "Compliance Gate"
+5. Save changes
+
+Now PRs with WP.org violations cannot be merged.
+
 ## Contributing
 
 To add new closure patterns or detection rules:
 
 1. Add grep patterns to `knowledge/grep-patterns.md`
-2. Add case study to `knowledge/closure-case-studies.md`
+2. Add detection to `action/check-wporg-compliance.sh`
 3. Update relevant category in `SKILL.md`
 4. Test against known-good and known-bad plugin
+
+## File Structure
+
+```
+wppool-plugin-reviewer/
+├── .github/
+│   └── workflows/
+│       └── wporg-compliance.yml     # Reusable workflow (called by plugin repos)
+├── action/
+│   └── check-wporg-compliance.sh    # Main checking script (12 categories)
+├── templates/
+│   └── pr-check.yml                 # Template for plugin repos to copy
+├── knowledge/
+│   ├── closure-case-studies.md
+│   ├── compliant-trialware-pattern.md
+│   ├── grep-patterns.md
+│   ├── official-guidelines-and-pcp.md
+│   └── reviewer-response-templates.md
+├── README.md
+├── SKILL.md
+├── install.sh
+├── install.ps1
+└── .gitignore
+```
 
 ## License
 

@@ -1,0 +1,303 @@
+name: WP.org Compliance Check
+
+on:
+  workflow_call:
+    inputs:
+      plugin-dir:
+        description: 'Path to plugin directory (relative to repo root)'
+        required: false
+        type: string
+        default: '.'
+      php-version:
+        description: 'PHP version for PHPCS'
+        required: false
+        type: string
+        default: '8.0'
+      fail-on-warnings:
+        description: 'Fail the check on warnings (not just blockers)'
+        required: false
+        type: boolean
+        default: false
+      phpcs-standard:
+        description: 'PHPCS standard to use'
+        required: false
+        type: string
+        default: 'WordPress-Extra'
+      plugin-text-domain:
+        description: 'Plugin text domain for PHPCS prefix check'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      ANTHROPIC_API_KEY:
+        description: 'Anthropic API key for Claude AI review (optional)'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  # ─── Job 1: PHPCS + WordPress Coding Standards ───
+  phpcs:
+    name: PHPCS / WordPress Standards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          tools: cs2pr, phpcs, phpcbf
+
+      - name: Install WordPress Coding Standards
+        run: |
+          composer global config allow-plugins.dealerdirect/phpcodesniffer-composer-installer true
+          composer global require --dev wp-coding-standards/wpcs:"^3.0" phpcompatibility/phpcompatibility-wp:"*" dealerdirect/phpcodesniffer-composer-installer:"^1.0"
+          phpcs -i
+
+      - name: Run PHPCS
+        id: phpcs
+        continue-on-error: true
+        run: |
+          EXTRA_ARGS=""
+          if [ -n "${{ inputs.plugin-text-domain }}" ]; then
+            EXTRA_ARGS="--runtime-set text_domain ${{ inputs.plugin-text-domain }}"
+          fi
+
+          phpcs \
+            --standard=${{ inputs.phpcs-standard }} \
+            --extensions=php \
+            --ignore=*/vendor/*,*/node_modules/*,*/build/*,*/dist/* \
+            --report=checkstyle \
+            --report-file=phpcs-report.xml \
+            $EXTRA_ARGS \
+            ${{ inputs.plugin-dir }} || true
+
+          # Also generate human-readable report
+          phpcs \
+            --standard=${{ inputs.phpcs-standard }} \
+            --extensions=php \
+            --ignore=*/vendor/*,*/node_modules/*,*/build/*,*/dist/* \
+            --report=summary \
+            $EXTRA_ARGS \
+            ${{ inputs.plugin-dir }} > phpcs-summary.txt 2>&1 || true
+
+          cat phpcs-summary.txt
+
+      - name: Convert PHPCS to PR annotations
+        if: always()
+        run: |
+          if [ -f phpcs-report.xml ]; then
+            cs2pr phpcs-report.xml || true
+          fi
+
+      - name: Upload PHPCS report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phpcs-report
+          path: |
+            phpcs-report.xml
+            phpcs-summary.txt
+
+  # ─── Job 2: WP.org Compliance Grep Checks ───
+  wporg-compliance:
+    name: WP.org Compliance
+    runs-on: ubuntu-latest
+    outputs:
+      blockers: ${{ steps.check.outputs.blockers }}
+      warnings: ${{ steps.check.outputs.warnings }}
+      result: ${{ steps.check.outputs.result }}
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+
+      - name: Checkout compliance checker
+        uses: actions/checkout@v4
+        with:
+          repository: WPPOOL/wppool-plugin-reviewer
+          path: .wppool-reviewer
+          sparse-checkout: action
+
+      - name: Run WP.org compliance checks
+        id: check
+        run: |
+          chmod +x .wppool-reviewer/action/check-wporg-compliance.sh
+
+          # Run checker, capture JSON output and exit code
+          set +e
+          FINDINGS=$(.wppool-reviewer/action/check-wporg-compliance.sh "${{ inputs.plugin-dir }}" 2>compliance-stderr.txt)
+          CHECK_EXIT=$?
+          set -e
+
+          # Show stderr (human-readable output)
+          cat compliance-stderr.txt
+
+          # Save JSON findings
+          echo "$FINDINGS" > compliance-findings.json
+
+          # Count findings
+          BLOCKERS=$(echo "$FINDINGS" | grep -c '"severity":"BLOCKER"' || echo "0")
+          WARNINGS=$(echo "$FINDINGS" | grep -c '"severity":"WARNING"' || echo "0")
+
+          echo "blockers=$BLOCKERS" >> "$GITHUB_OUTPUT"
+          echo "warnings=$WARNINGS" >> "$GITHUB_OUTPUT"
+
+          if [ "$CHECK_EXIT" -ne 0 ]; then
+            echo "result=FAIL" >> "$GITHUB_OUTPUT"
+          elif [ "$WARNINGS" -gt 0 ] && [ "${{ inputs.fail-on-warnings }}" = "true" ]; then
+            echo "result=FAIL" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=PASS" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload compliance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report
+          path: |
+            compliance-findings.json
+            compliance-stderr.txt
+
+  # ─── Job 3: Post PR Comment ───
+  comment:
+    name: PR Comment
+    runs-on: ubuntu-latest
+    needs: [phpcs, wporg-compliance]
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - name: Download compliance report
+        uses: actions/download-artifact@v4
+        with:
+          name: compliance-report
+          path: reports
+
+      - name: Download PHPCS report
+        uses: actions/download-artifact@v4
+        with:
+          name: phpcs-report
+          path: reports
+        continue-on-error: true
+
+      - name: Generate and post PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            let findings = [];
+            try {
+              const raw = fs.readFileSync('reports/compliance-findings.json', 'utf8');
+              findings = JSON.parse(raw);
+            } catch (e) {
+              console.log('No findings file found');
+            }
+
+            let phpcsReport = '';
+            try {
+              phpcsReport = fs.readFileSync('reports/phpcs-summary.txt', 'utf8');
+            } catch (e) {
+              console.log('No PHPCS report found');
+            }
+
+            const blockers = findings.filter(f => f.severity === 'BLOCKER');
+            const warnings = findings.filter(f => f.severity === 'WARNING');
+            const infos = findings.filter(f => f.severity === 'INFO');
+
+            const result = '${{ needs.wporg-compliance.outputs.result }}';
+            const emoji = result === 'FAIL' ? '🚫' : (warnings.length > 0 ? '⚠️' : '✅');
+
+            let body = `## ${emoji} WP.org Compliance Check\n\n`;
+            body += `| Metric | Count |\n|---|---|\n`;
+            body += `| Blockers | **${blockers.length}** |\n`;
+            body += `| Warnings | ${warnings.length} |\n`;
+            body += `| Info | ${infos.length} |\n\n`;
+
+            if (blockers.length > 0) {
+              body += `### 🚫 Blockers (will cause WP.org closure)\n\n`;
+              body += `| Category | File | Issue | Fix |\n|---|---|---|---|\n`;
+              for (const f of blockers) {
+                const file = f.line > 0 ? `\`${f.file}:${f.line}\`` : `\`${f.file}\``;
+                const msg = f.message.replace(/\|/g, '\\|').substring(0, 200);
+                const fix = (f.fix || '').replace(/\|/g, '\\|').substring(0, 150);
+                body += `| ${f.category} | ${file} | ${msg} | ${fix} |\n`;
+              }
+              body += `\n`;
+            }
+
+            if (warnings.length > 0) {
+              body += `### ⚠️ Warnings (may cause closure)\n\n`;
+              body += `| Category | File | Issue | Fix |\n|---|---|---|---|\n`;
+              for (const f of warnings) {
+                const file = f.line > 0 ? `\`${f.file}:${f.line}\`` : `\`${f.file}\``;
+                const msg = f.message.replace(/\|/g, '\\|').substring(0, 200);
+                const fix = (f.fix || '').replace(/\|/g, '\\|').substring(0, 150);
+                body += `| ${f.category} | ${file} | ${msg} | ${fix} |\n`;
+              }
+              body += `\n`;
+            }
+
+            if (blockers.length === 0 && warnings.length === 0) {
+              body += `### ✅ All clear!\n\nNo WP.org compliance issues detected.\n\n`;
+            }
+
+            if (phpcsReport) {
+              body += `<details>\n<summary>PHPCS Summary</summary>\n\n\`\`\`\n${phpcsReport.substring(0, 3000)}\n\`\`\`\n</details>\n\n`;
+            }
+
+            body += `---\n*Powered by [WPPOOL Plugin Reviewer](https://github.com/WPPOOL/wppool-plugin-reviewer)*`;
+
+            // Find existing comment to update
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.body && c.body.includes('WP.org Compliance Check') &&
+              c.body.includes('WPPOOL Plugin Reviewer')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body,
+              });
+            }
+
+  # ─── Job 4: Set Check Status ───
+  status:
+    name: Compliance Gate
+    runs-on: ubuntu-latest
+    needs: [wporg-compliance]
+    if: always()
+    steps:
+      - name: Check result
+        run: |
+          RESULT="${{ needs.wporg-compliance.outputs.result }}"
+          BLOCKERS="${{ needs.wporg-compliance.outputs.blockers }}"
+          WARNINGS="${{ needs.wporg-compliance.outputs.warnings }}"
+
+          echo "Result: $RESULT"
+          echo "Blockers: $BLOCKERS"
+          echo "Warnings: $WARNINGS"
+
+          if [ "$RESULT" = "FAIL" ]; then
+            echo "::error::WP.org compliance check failed with $BLOCKERS blocker(s). PR cannot be merged."
+            exit 1
+          fi

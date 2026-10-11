@@ -1,0 +1,43 @@
+# ─────────────────────────────────────────────────────────────
+# WP.org Compliance PR Check
+# Copy this file to your plugin repo: .github/workflows/wporg-compliance.yml
+# ─────────────────────────────────────────────────────────────
+#
+# What it does:
+#   - Runs PHPCS with WordPress coding standards
+#   - Checks 12 WP.org compliance categories (trialware, security, etc.)
+#   - Posts detailed PR comment with findings + fix suggestions
+#   - Blocks merge if any BLOCKER found
+#
+# Setup:
+#   1. Copy this file to .github/workflows/wporg-compliance.yml
+#   2. Update plugin-text-domain below to match your plugin slug
+#   3. (Optional) Add ANTHROPIC_API_KEY secret for AI-powered review
+#   4. Enable "Require status checks" in repo branch protection rules
+#      and add "Compliance Gate" as required check
+#
+
+name: WP.org Compliance
+
+on:
+  pull_request:
+    branches: [main, master, develop]
+    paths:
+      - '**.php'
+      - '**.js'
+      - '**.jsx'
+      - '**.ts'
+      - '**.tsx'
+      - 'readme.txt'
+      - 'readme.md'
+
+jobs:
+  compliance:
+    uses: WPPOOL/wppool-plugin-reviewer/.github/workflows/wporg-compliance.yml@main
+    with:
+      plugin-dir: '.'                    # Change if plugin is in subdirectory
+      php-version: '8.0'                 # Match your plugin's minimum PHP
+      plugin-text-domain: 'your-plugin'  # ← CHANGE THIS to your plugin slug
+      fail-on-warnings: false            # Set true to also block on warnings
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}  # Optional; remove if not using AI review
