@@ -1504,7 +1504,10 @@ jobs:
                   md.append(summary or 'No reviewable plugin code changed.')
               else:
                   result = 'FAIL: fix the AI-reported blockers before merging' if blockers else 'PASS: no blockers found by the AI review'
-                  scope = f'{len(files)} file(s) ({label})' if FULL_AUDIT else f'{len(files)} changed file(s) in the {label}'
+                  done = len(files) - len(truncated)
+                  scope = (f'{done} of {len(files)} file(s) ({label})' if FULL_AUDIT and truncated
+                           else f'{len(files)} file(s) ({label})' if FULL_AUDIT
+                           else f'{len(files)} changed file(s) in the {label}')
                   md += [f'**Result: {result}**', '', f'Reviewed {scope} with {provider}.', '']
                   if summary:
                       md += [cell(summary, 1500), '']
@@ -1543,23 +1546,35 @@ jobs:
                   write_report('ok', 'none', 'No reviewable plugin code found.', [], [], [], label)
                   return
               context = context_blocks(set())
-              findings, summaries, failed, provider = [], [], [], ''
-              for i, batch in enumerate(batches):
-                  if i and not ANTHROPIC_KEY:
-                      time.sleep(BATCH_PAUSE_SECONDS)
-                  names = sorted({b.split('\n', 1)[0].replace('### FILE: ', '').split(' (part ')[0] for b in batch})
-                  print(f'Audit batch {i + 1}/{len(batches)}: {len(names)} file(s)')
-                  tag = f' (batch {i + 1} of {len(batches)})' if len(batches) > 1 else ''
-                  try:
-                      result, provider = review(rules, build_prompt(batch, [], label, context, tag))
-                  except Exception as err:  # noqa: BLE001 - keep going; report what could not be reviewed
-                      print(f'Batch {i + 1} failed: {err}')
-                      failed += [n for n in names if n not in failed]
-                      continue
-                  if isinstance(result.get('findings'), list):
-                      findings += result['findings']
-                  if result.get('summary'):
-                      summaries.append(str(result['summary']))
+              findings, summaries, provider = [], [], ''
+              pending = list(enumerate(batches))
+              for attempt in range(2):
+                  retry = []
+                  for n, (i, batch) in enumerate(pending):
+                      if (n or attempt) and not ANTHROPIC_KEY:
+                          time.sleep(BATCH_PAUSE_SECONDS)
+                      names = sorted({b.split('\n', 1)[0].replace('### FILE: ', '').split(' (part ')[0] for b in batch})
+                      print(f'Audit batch {i + 1}/{len(batches)}: {len(names)} file(s)' + (' (retry)' if attempt else ''))
+                      tag = f' (batch {i + 1} of {len(batches)})' if len(batches) > 1 else ''
+                      try:
+                          result, provider = review(rules, build_prompt(batch, [], label, context, tag))
+                      except Exception as err:  # noqa: BLE001 - keep going; report what could not be reviewed
+                          print(f'Batch {i + 1} failed: {err}')
+                          retry.append((i, batch))
+                          continue
+                      if isinstance(result.get('findings'), list):
+                          findings += result['findings']
+                      if result.get('summary'):
+                          summaries.append(str(result['summary']))
+                  pending = retry
+                  if not pending:
+                      break
+                  if attempt == 0:
+                      # Provider overload (503) or rate limits usually clear within a couple of minutes.
+                      print(f'{len(pending)} batch(es) failed; retrying once in 2 minutes.')
+                      time.sleep(120)
+              failed = sorted({b.split('\n', 1)[0].replace('### FILE: ', '').split(' (part ')[0]
+                               for _, batch in pending for b in batch})
               if len(failed) == len(files):
                   write_report('error', '', '', [], files, [], label, 'every audit batch failed; see the job log')
                   return
