@@ -105,7 +105,7 @@ while IFS=: read -r file line content; do
 
     # Flag if used in conditional (if/ternary/return)
     if echo "$content" | grep -qE '(if|return|&&|\|\||[\?:])\s*.*\b(is_pro|is_premium|is_ultimate|license_status|can_use_premium)\b'; then
-        add_finding "BLOCKER" "G5-Trialware" "$file" "$line" "License check gates functionality: $(echo "$content" | head -c 120)" "Remove gate; use apply_filters() with real default"
+        add_finding "BLOCKER" "G5-Trialware" "$file" "$line" "License check gates functionality: ${content:0:120}" "Remove gate; use apply_filters() with real default"
     fi
 done < <(grep -rnE '\b(is_pro|is_premium|is_ultimate|license_status|can_use_premium)\b' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
@@ -113,7 +113,7 @@ done < <(grep -rnE '\b(is_pro|is_premium|is_ultimate|license_status|can_use_prem
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
     if echo "$content" | grep -qE "apply_filters\s*\(\s*['\"][^'\"]+['\"]\s*,\s*(null|false|\[\]|''|\"\")\s*[,)]"; then
-        add_finding "WARNING" "G5-Trialware" "$file" "$line" "apply_filters() with potentially locking default (null/false/[]/empty): $(echo "$content" | head -c 120)" "Use real working default value"
+        add_finding "WARNING" "G5-Trialware" "$file" "$line" "apply_filters() with potentially locking default (null/false/[]/empty): ${content:0:120}" "Use real working default value"
     fi
 done < <(grep -rnE "apply_filters\s*\(" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
@@ -139,14 +139,14 @@ fi
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
     if echo "$content" | grep -qE "(wp_enqueue_script|wp_enqueue_style|wp_register_script|wp_register_style).*https?://"; then
-        add_finding "BLOCKER" "G8-Remote-Resources" "$file" "$line" "Remote JS/CSS loading detected (must bundle locally): $(echo "$content" | head -c 120)" "Download and bundle file locally"
+        add_finding "BLOCKER" "G8-Remote-Resources" "$file" "$line" "Remote JS/CSS loading detected (must bundle locally): ${content:0:120}" "Download and bundle file locally"
     fi
 done < <(grep -rnE "(wp_enqueue_script|wp_enqueue_style|wp_register_script|wp_register_style)" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep "http" | grep -v vendor/ | grep -v node_modules/ || true)
 
 # Tracking without opt-in check
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
-    add_finding "WARNING" "G7-Tracking" "$file" "$line" "Telemetry/tracking call found; verify opt-in consent: $(echo "$content" | head -c 120)" "Ensure tracking is opt-in, off by default"
+    add_finding "WARNING" "G7-Tracking" "$file" "$line" "Telemetry/tracking call found; verify opt-in consent: ${content:0:120}" "Ensure tracking is opt-in, off by default"
 done < <(grep -rnE "(send_tracking|track_usage|telemetry|analytics.*send|usage_data)" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 
@@ -167,7 +167,7 @@ while IFS=: read -r file line content; do
         -e 's/\$_(POST|GET|REQUEST|SERVER)\[[^]]*\]\s*[!=]==//g' \
         -e 's/[!=]==\s*\$_(POST|GET|REQUEST|SERVER)\[[^]]*\]//g')
     echo "$remaining" | grep -qE '\$_(POST|GET|REQUEST|SERVER)\[' || continue
-    add_finding "BLOCKER" "Security-Input" "$file" "$line" "Unsanitized superglobal access: $(echo "$content" | head -c 100)" "Use sanitize_text_field(wp_unslash(\$_POST['key']))"
+    add_finding "BLOCKER" "Security-Input" "$file" "$line" "Unsanitized superglobal access: ${content:0:100}" "Use sanitize_text_field(wp_unslash(\$_POST['key']))"
 done < <(grep -rnIE '\$_(POST|GET|REQUEST|SERVER)\[' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 # Missing nonce verification on AJAX handlers
@@ -179,7 +179,7 @@ while IFS=: read -r file line content; do
         # Check if function has nonce verification
         has_nonce=$(grep -c "check_ajax_referer\|wp_verify_nonce\|verify_nonce" "$file" 2>/dev/null || true)
         if [ "${has_nonce:-0}" -eq 0 ]; then
-            add_finding "BLOCKER" "Security-Nonce" "$file" "$line" "AJAX handler without nonce verification: $(echo "$content" | head -c 100)" "Add check_ajax_referer('action_name', 'nonce')"
+            add_finding "BLOCKER" "Security-Nonce" "$file" "$line" "AJAX handler without nonce verification: ${content:0:100}" "Add check_ajax_referer('action_name', 'nonce')"
         fi
     fi
 done < <(grep -rnE "add_action\s*\(\s*['\"]wp_ajax_(nopriv_)?" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
@@ -196,7 +196,7 @@ while IFS=: read -r file line content; do
         has_perm=$(grep -c "permission_callback" "$file" 2>/dev/null || true)
     fi
     if [ "${has_perm:-0}" -eq 0 ]; then
-        add_finding "BLOCKER" "Security-REST" "$file" "$line" "REST route without permission_callback: $(echo "$content" | head -c 100)" "Add 'permission_callback' => function() { return current_user_can('manage_options'); }"
+        add_finding "BLOCKER" "Security-REST" "$file" "$line" "REST route without permission_callback: ${content:0:100}" "Add 'permission_callback' => function() { return current_user_can('manage_options'); }"
     fi
 done < <(grep -rnIE '(^|[^A-Za-z0-9_$>:])register_rest_route[[:space:]]*\(' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
@@ -207,7 +207,7 @@ while IFS=: read -r file line content; do
     [[ "$trimmed" == //* || "$trimmed" == \** ]] && continue
     # Skip if already escaped
     echo "$content" | grep -qE "(esc_html|esc_attr|esc_url|esc_js|wp_kses|sanitize_)" && continue
-    add_finding "WARNING" "Security-Escaping" "$file" "$line" "Possible unescaped output: $(echo "$content" | head -c 100)" "Use esc_html(), esc_attr(), esc_url(), or wp_kses()"
+    add_finding "WARNING" "Security-Escaping" "$file" "$line" "Possible unescaped output: ${content:0:100}" "Use esc_html(), esc_attr(), esc_url(), or wp_kses()"
 done < <(grep -rnE '^\s*echo\s+\$' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 # Direct SQL without prepare
@@ -227,7 +227,7 @@ while IFS=: read -r file line content; do
     # Fully static SQL: the only interpolation is the table prefix.
     dynamic=$(echo "$statement" | sed -E -e 's/^.*->(query|get_results|get_row|get_var|get_col)\s*\(//' -e 's/\{?\$(this->)?wpdb->[A-Za-z_]+\}?//g')
     echo "$dynamic" | grep -qE '\$[A-Za-z_]' || continue
-    add_finding "BLOCKER" "Security-SQL" "$file" "$line" "Direct DB query possibly without \$wpdb->prepare(): $(echo "$content" | head -c 100)" "Use \$wpdb->prepare() for all queries with variables"
+    add_finding "BLOCKER" "Security-SQL" "$file" "$line" "Direct DB query possibly without \$wpdb->prepare(): ${content:0:100}" "Use \$wpdb->prepare() for all queries with variables"
 done < <(grep -rnE '\$wpdb->(query|get_results|get_row|get_var|get_col)\s*\(' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ | grep '\$' || true)
 
 # register_setting without sanitize_callback
@@ -235,7 +235,7 @@ while IFS=: read -r file line content; do
     skip_path "$file" && continue
     has_sanitize=$(sed -n "$((line)),$((line+5))p" "$file" 2>/dev/null | grep -c "sanitize_callback" || true)
     if [ "${has_sanitize:-0}" -eq 0 ]; then
-        add_finding "BLOCKER" "Security-Settings" "$file" "$line" "register_setting() without sanitize_callback: $(echo "$content" | head -c 100)" "Add 'sanitize_callback' in third argument array"
+        add_finding "BLOCKER" "Security-Settings" "$file" "$line" "register_setting() without sanitize_callback: ${content:0:100}" "Add 'sanitize_callback' in third argument array"
     fi
 done < <(grep -rn "register_setting" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
@@ -272,7 +272,7 @@ echo -e "\n=== Category 5: Plugin Updater ===" >&2
 
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
-    add_finding "BLOCKER" "Plugin-Updater" "$file" "$line" "Custom plugin updater detected (forbidden by G8): $(echo "$content" | head -c 100)" "Remove custom updater; use WP.org update system only"
+    add_finding "BLOCKER" "Plugin-Updater" "$file" "$line" "Custom plugin updater detected (forbidden by G8): ${content:0:100}" "Remove custom updater; use WP.org update system only"
 done < <(grep -rnE "(plugin-update-checker|WP_GitHub_Updater|WPGitHubUpdater|PucFactory|YahnisElsts|pre_set_site_transient_update_plugins|site_transient_update_plugins|add_filter\s*\(\s*['\"]plugins_api['\"])" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 
@@ -351,7 +351,7 @@ done < <(grep -rn "ALLOW_UNFILTERED_UPLOADS" "$PLUGIN_DIR" --include="*.php" 2>/
 # Defining WP core constants
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
-    add_finding "WARNING" "Dangerous-Constant" "$file" "$line" "Plugin defines WP core constant: $(echo "$content" | head -c 100)" "Remove; do not redefine WP core constants"
+    add_finding "WARNING" "Dangerous-Constant" "$file" "$line" "Plugin defines WP core constant: ${content:0:100}" "Remove; do not redefine WP core constants"
 done < <(grep -rnIE "define\s*\(\s*['\"]WP_(DEBUG|DEBUG_LOG|DEBUG_DISPLAY|MEMORY_LIMIT|MAX_MEMORY_LIMIT|CONTENT_DIR|CONTENT_URL|PLUGIN_DIR|PLUGIN_URL|LANG_DIR|HOME|SITEURL|CACHE|POST_REVISIONS|AUTO_UPDATE_CORE|ALLOW_REPAIR|ALLOW_MULTISITE|DEFAULT_THEME|TEMP_DIR|ENVIRONMENT_TYPE|CRON_LOCK_TIMEOUT|DISABLE_FATAL_ERROR_HANDLER|HTTP_BLOCK_EXTERNAL|ACCESSIBLE_HOSTS)['\"]" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 
@@ -361,7 +361,7 @@ echo -e "\n=== Category 9: Localhost ===" >&2
 
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
-    add_finding "WARNING" "Localhost" "$file" "$line" "Localhost/dev reference found: $(echo "$content" | head -c 80)" "Remove before production release"
+    add_finding "WARNING" "Localhost" "$file" "$line" "Localhost/dev reference found: ${content:0:80}" "Remove before production release"
 done < <(grep -rnIE "(localhost|127\.0\.0\.1)" "$PLUGIN_DIR" --include="*.php" --include="*.js" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ | grep -v "*.min.js" || true)
 
 
@@ -371,7 +371,7 @@ echo -e "\n=== Category 10: Code Obfuscation ===" >&2
 
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
-    add_finding "BLOCKER" "Obfuscation" "$file" "$line" "Obfuscated/encoded code detected: $(echo "$content" | head -c 80)" "Ship readable source code"
+    add_finding "BLOCKER" "Obfuscation" "$file" "$line" "Obfuscated/encoded code detected: ${content:0:80}" "Ship readable source code"
 done < <(grep -rnE '(@Zend;|sourceguardian\.com|sg_load|ionCube|\$__x=|eval\s*\(\s*base64_decode|eval\s*\(\s*gzinflate)' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 
@@ -587,14 +587,14 @@ echo -e "\n=== Category 15: WP.org Code Rules ===" >&2
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
     is_comment "$content" && continue
-    add_finding "BLOCKER" "Core-Loading" "$file" "$line" "Loads a WordPress core loading file directly: $(echo "$content" | head -c 120)" "Run inside WordPress instead (admin-ajax.php, the REST API or admin-post.php hooks)"
+    add_finding "BLOCKER" "Core-Loading" "$file" "$line" "Loads a WordPress core loading file directly: ${content:0:120}" "Run inside WordPress instead (admin-ajax.php, the REST API or admin-post.php hooks)"
 done < <(grep -rnIE "(require|include)(_once)?[^;]*(wp-(load|config|blog-header|settings)\.php|wp-admin/admin\.php)" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 # HEREDOC / NOWDOC.
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
     is_comment "$content" && continue
-    add_finding "BLOCKER" "HEREDOC" "$file" "$line" "HEREDOC/NOWDOC syntax (WP.org asks for it to be removed): $(echo "$content" | head -c 100)" "Use normal strings, or close PHP and write the HTML with escaped echo statements"
+    add_finding "BLOCKER" "HEREDOC" "$file" "$line" "HEREDOC/NOWDOC syntax (WP.org asks for it to be removed): ${content:0:100}" "Use normal strings, or close PHP and write the HTML with escaped echo statements"
 done < <(grep -rnIE "<<<[[:space:]]*['\"]?[A-Za-z_]" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 # ob_start() without a matching close.
@@ -614,7 +614,7 @@ while IFS=: read -r file line content; do
     is_comment "$content" && continue
     severity="WARNING"
     [[ "$content" == *date_default_timezone_set* ]] && severity="BLOCKER"
-    add_finding "$severity" "Server-Config" "$file" "$line" "Changes a global PHP setting for the whole site: $(echo "$content" | head -c 100)" "Remove it; use wp_date()/current_time() for time zones and let the site owner manage PHP limits"
+    add_finding "$severity" "Server-Config" "$file" "$line" "Changes a global PHP setting for the whole site: ${content:0:100}" "Remove it; use wp_date()/current_time() for time zones and let the site owner manage PHP limits"
 done < <(grep -rnIE '(^|[^A-Za-z0-9_>:$])(ini_set|error_reporting|date_default_timezone_set|set_time_limit)[[:space:]]*\(' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 # Hardcoded wp-content / wp-json paths.
@@ -622,7 +622,7 @@ while IFS=: read -r file line content; do
     case "$file" in *.min.js|*/build/*|*/dist/*) continue ;; esac
     skip_path "$file" && continue
     is_comment "$content" && continue
-    add_finding "WARNING" "Hardcoded-Path" "$file" "$line" "Hardcoded WordPress path/URL: $(echo "$content" | head -c 100)" "Use plugin_dir_path(), plugins_url(), content_url(), wp_upload_dir() or rest_url() (wp.apiFetch / wpApiSettings.root in JS)"
+    add_finding "WARNING" "Hardcoded-Path" "$file" "$line" "Hardcoded WordPress path/URL: ${content:0:100}" "Use plugin_dir_path(), plugins_url(), content_url(), wp_upload_dir() or rest_url() (wp.apiFetch / wpApiSettings.root in JS)"
 done < <(grep -rnIE "['\"/]wp-content/(plugins|themes|uploads)|['\"]/?wp-json/" "$PLUGIN_DIR" --include="*.php" --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" --include="*.vue" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 # Writing into the plugin/theme/core folders or generating PHP files.
@@ -632,9 +632,9 @@ while IFS=: read -r file line content; do
     if echo "$content" | grep -qE "index\.php['\"]"; then
         continue  # "Silence is golden" index.php guards in upload folders are fine.
     elif echo "$content" | grep -qE "\.php['\"]"; then
-        add_finding "BLOCKER" "File-Write" "$file" "$line" "Writes a PHP file: $(echo "$content" | head -c 100)" "Never generate PHP files; store data in the database or under wp_upload_dir()"
+        add_finding "BLOCKER" "File-Write" "$file" "$line" "Writes a PHP file: ${content:0:100}" "Never generate PHP files; store data in the database or under wp_upload_dir()"
     elif echo "$content" | grep -qE '__DIR__|__FILE__|plugin_dir_path|WP_PLUGIN_DIR|WP_CONTENT_DIR|ABSPATH|get_template_directory|get_stylesheet_directory|_PLUGIN_(DIR|PATH)|_DIR[^A-Za-z]|_PATH[^A-Za-z]'; then
-        add_finding "WARNING" "File-Write" "$file" "$line" "Possibly writes into the plugin/theme/core folder: $(echo "$content" | head -c 100)" "Write files under wp_upload_dir() (or keep the data in the database); plugin folders are replaced on update"
+        add_finding "WARNING" "File-Write" "$file" "$line" "Possibly writes into the plugin/theme/core folder: ${content:0:100}" "Write files under wp_upload_dir() (or keep the data in the database); plugin folders are replaced on update"
     fi
 done < <(grep -rnIE '(^|[^A-Za-z0-9_>:$])(file_put_contents|fopen|copy|rename|move_uploaded_file|mkdir|wp_mkdir_p)[[:space:]]*\(' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ | grep -vE "fopen[[:space:]]*\([[:space:]]*['\"]php://" || true)
 
@@ -642,20 +642,20 @@ done < <(grep -rnIE '(^|[^A-Za-z0-9_>:$])(file_put_contents|fopen|copy|rename|mo
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
     is_comment "$content" && continue
-    add_finding "WARNING" "Plugin-Install" "$file" "$line" "Installs or activates another plugin: $(echo "$content" | head -c 100)" "Only allowed as a direct user action (button click) with nonce + capability checks; prefer the Requires Plugins header or a link to the core plugin installer"
+    add_finding "WARNING" "Plugin-Install" "$file" "$line" "Installs or activates another plugin: ${content:0:100}" "Only allowed as a direct user action (button click) with nonce + capability checks; prefer the Requires Plugins header or a link to the core plugin installer"
 done < <(grep -rnIE '(^|[^A-Za-z0-9_>:$])(activate_plugins?)[[:space:]]*\(|new[[:space:]]+(\\)?Plugin_Upgrader|(^|[^A-Za-z0-9_>:$])plugins_api[[:space:]]*\(' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 # Free code that detects Pro (class_exists / defined / function_exists / is_plugin_active).
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
     is_comment "$content" && continue
-    add_finding "WARNING" "G5-Pro-Gate" "$file" "$line" "Free code checks whether Pro is installed: $(echo "$content" | head -c 120). If this changes what the free plugin does, it is trialware (G5)" "Keep free behaviour identical with or without Pro; expose apply_filters()/do_action() hooks that Pro attaches to"
+    add_finding "WARNING" "G5-Pro-Gate" "$file" "$line" "Free code checks whether Pro is installed: ${content:0:120}. If this changes what the free plugin does, it is trialware (G5)" "Keep free behaviour identical with or without Pro; expose apply_filters()/do_action() hooks that Pro attaches to"
 done < <(grep -rnIE "(class_exists|defined|function_exists|is_plugin_active)[[:space:]]*\([[:space:]]*['\"][^'\"]*(PRO(_|['\"])|Pro([A-Z_\\\\]|['\"])|[-_]pro([-_/.]|['\"])|[Pp]remium|PREMIUM)" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 # Review links filtered to 5 stars.
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
-    add_finding "BLOCKER" "Review-Manipulation" "$file" "$line" "Review link filtered to 5-star reviews: $(echo "$content" | head -c 100)" "Link to the plain reviews page (wordpress.org/support/plugin/<slug>/reviews/#new-post)"
+    add_finding "BLOCKER" "Review-Manipulation" "$file" "$line" "Review link filtered to 5-star reviews: ${content:0:100}" "Link to the plain reviews page (wordpress.org/support/plugin/<slug>/reviews/#new-post)"
 done < <(grep -rnIE 'reviews/?\?filter=5' "$PLUGIN_DIR" --include="*.php" --include="*.js" --include="*.jsx" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 
@@ -674,7 +674,7 @@ if [ -n "$TEXT_DOMAIN" ]; then
         skip_path "$file" && continue
         is_comment "$content" && continue
         if [[ "$file" == *.php ]] && grep -qE "$I18N_NONLITERAL" <<< "$content"; then
-            add_finding "BLOCKER" "i18n" "$file" "$line" "Translation function called with a variable instead of a literal string: $(echo "$content" | head -c 100)" "Pass the literal text to __()/_e()/esc_html__() so it can be extracted for translation"
+            add_finding "BLOCKER" "i18n" "$file" "$line" "Translation function called with a variable instead of a literal string: ${content:0:100}" "Pass the literal text to __()/_e()/esc_html__() so it can be extracted for translation"
         fi
         while IFS= read -r call; do
             [ -z "$call" ] && continue
@@ -684,14 +684,14 @@ if [ -n "$TEXT_DOMAIN" ]; then
             needed=1
             [[ "$call" == _x* || "$call" == _ex* || "$call" == esc_html_x* || "$call" == esc_attr_x* ]] && needed=2
             if [ "$((commas))" -lt "$needed" ]; then
-                [[ "$file" == *.php ]] && add_finding "BLOCKER" "i18n" "$file" "$line" "Translation call without a text domain: $(echo "$call" | head -c 100)" "Add '$TEXT_DOMAIN' as the text domain argument"
+                [[ "$file" == *.php ]] && add_finding "BLOCKER" "i18n" "$file" "$line" "Translation call without a text domain: ${call:0:100}" "Add '$TEXT_DOMAIN' as the text domain argument"
                 continue
             fi
             domain=$(sed -E 's/.*,[[:space:]]*([^),]+)[[:space:]]*\)$/\1/; s/[[:space:]]+$//' <<< "$call")
             case "$domain" in
                 "'$TEXT_DOMAIN'"|"\"$TEXT_DOMAIN\"") ;;
                 \'*\'|\"*\")
-                    add_finding "BLOCKER" "i18n" "$file" "$line" "Wrong text domain $domain (plugin slug is '$TEXT_DOMAIN'): $(echo "$call" | head -c 100)" "Use '$TEXT_DOMAIN' as the text domain" ;;
+                    add_finding "BLOCKER" "i18n" "$file" "$line" "Wrong text domain $domain (plugin slug is '$TEXT_DOMAIN'): ${call:0:100}" "Use '$TEXT_DOMAIN' as the text domain" ;;
                 *)
                     add_finding "BLOCKER" "i18n" "$file" "$line" "Text domain is a variable or constant ($domain), so translation tools cannot read it" "Use the literal string '$TEXT_DOMAIN'" ;;
             esac
