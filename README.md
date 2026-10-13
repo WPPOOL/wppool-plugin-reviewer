@@ -350,7 +350,12 @@ A commit review only sees what the commit changed. To also catch problems in cod
 | 35 | Wrong, missing, variable or constant text domain; variable strings in `__()` | Grep | Yes |
 | 36 | File names that break SVN or case-insensitive file systems | Repo scan | Yes |
 | 37 | Every external host the code contacts (and known trackers / IP lookups anywhere, incl. `vendor/`) is named in readme.txt | Grep | Yes |
-| 38 | AI review (judgement: trialware intent, serviceware, opt-in flow, security logic) | AI | Yes |
+| 38 | Defining core constants (`WP_NETWORK_ADMIN`, `WP_USER_ADMIN`, `WP_DEBUG`, ...) | Grep | Yes |
+| 39 | Global filters that change the whole site (`clean_url`, `home_url`, `active_plugins`, ...) | Grep | Yes |
+| 40 | Code/assets loaded from public CDNs (unpkg, jsDelivr, cdnjs, ...), incl. minified/build files | Grep | Yes |
+| 41 | Method names built from variables (`$this->{...}`), option/transient names built from request input | Grep | Warning / Yes |
+| 42 | Depends on WooCommerce without `Requires Plugins:` header | Grep | Warning |
+| 43 | AI review (judgement: trialware intent, serviceware, opt-in flow, shortcode escaping, security logic) | AI | Yes |
 
 ### PR Comment Format
 
@@ -445,7 +450,7 @@ wppool-plugin-reviewer/
 │   └── workflows/
 │       └── wporg-compliance.yml     # Reusable workflow (called by plugin repos)
 ├── action/
-│   ├── check-wporg-compliance.sh    # Pattern + repo checks (17 categories)
+│   ├── check-wporg-compliance.sh    # Pattern + repo checks (18 categories)
 │   ├── ai-review.py                 # AI review (commit or full audit)
 │   ├── ai-review-rules.md           # AI reviewer rules (knowledge/ is appended)
 │   └── embed-checker.py             # Copies action/ + knowledge/ into the reusable workflow

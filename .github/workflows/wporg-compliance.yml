@@ -548,8 +548,8 @@ jobs:
           # Defining WP core constants
           while IFS=: read -r file line content; do
               skip_path "$file" && continue
-              add_finding "WARNING" "Dangerous-Constant" "$file" "$line" "Plugin defines WP core constant: ${content:0:100}" "Remove; do not redefine WP core constants"
-          done < <(grep -rnIE "define\s*\(\s*['\"]WP_(DEBUG|DEBUG_LOG|DEBUG_DISPLAY|MEMORY_LIMIT|MAX_MEMORY_LIMIT|CONTENT_DIR|CONTENT_URL|PLUGIN_DIR|PLUGIN_URL|LANG_DIR|HOME|SITEURL|CACHE|POST_REVISIONS|AUTO_UPDATE_CORE|ALLOW_REPAIR|ALLOW_MULTISITE|DEFAULT_THEME|TEMP_DIR|ENVIRONMENT_TYPE|CRON_LOCK_TIMEOUT|DISABLE_FATAL_ERROR_HANDLER|HTTP_BLOCK_EXTERNAL|ACCESSIBLE_HOSTS)['\"]" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+              add_finding "BLOCKER" "Dangerous-Constant" "$file" "$line" "Plugin defines a WordPress core constant (changes global behaviour): ${content:0:100}" "Remove; do not define WordPress core constants"
+          done < <(grep -rnIE "define\s*\(\s*['\"]WP_(NETWORK_ADMIN|USER_ADMIN|ADMIN|INSTALLING|IMPORTING|SETUP_CONFIG|REPAIRING|DEBUG|DEBUG_LOG|DEBUG_DISPLAY|MEMORY_LIMIT|MAX_MEMORY_LIMIT|CONTENT_DIR|CONTENT_URL|PLUGIN_DIR|PLUGIN_URL|LANG_DIR|HOME|SITEURL|CACHE|POST_REVISIONS|AUTO_UPDATE_CORE|ALLOW_REPAIR|ALLOW_MULTISITE|DEFAULT_THEME|TEMP_DIR|ENVIRONMENT_TYPE|CRON_LOCK_TIMEOUT|DISABLE_FATAL_ERROR_HANDLER|HTTP_BLOCK_EXTERNAL|ACCESSIBLE_HOSTS)['\"]" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 
           # ─── CHECK 9: Localhost References ───
@@ -819,7 +819,9 @@ jobs:
               case "$file" in *.min.js|*/build/*|*/dist/*) continue ;; esac
               skip_path "$file" && continue
               is_comment "$content" && continue
-              add_finding "WARNING" "Hardcoded-Path" "$file" "$line" "Hardcoded WordPress path/URL: ${content:0:100}" "Use plugin_dir_path(), plugins_url(), content_url(), wp_upload_dir() or rest_url() (wp.apiFetch / wpApiSettings.root in JS)"
+              severity="WARNING"
+              [[ "$file" == *.php ]] && severity="BLOCKER"
+              add_finding "$severity" "Hardcoded-Path" "$file" "$line" "Hardcoded WordPress path/URL: ${content:0:100}" "Use plugin_dir_path(), plugins_url(), content_url(), wp_upload_dir() or rest_url() (wp.apiFetch / wpApiSettings.root in JS)"
           done < <(grep -rnIE "['\"/]wp-content/(plugins|themes|uploads)|['\"]/?wp-json/" "$PLUGIN_DIR" --include="*.php" --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" --include="*.vue" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
           # Writing into the plugin/theme/core folders or generating PHP files.
@@ -848,6 +850,36 @@ jobs:
               is_comment "$content" && continue
               add_finding "WARNING" "G5-Pro-Gate" "$file" "$line" "Free code checks whether Pro is installed: ${content:0:120}. If this changes what the free plugin does, it is trialware (G5)" "Keep free behaviour identical with or without Pro; expose apply_filters()/do_action() hooks that Pro attaches to"
           done < <(grep -rnIE "(class_exists|defined|function_exists|is_plugin_active)[[:space:]]*\([[:space:]]*['\"][^'\"]*(PRO(_|['\"])|Pro([A-Z_\\\\]|['\"])|[-_]pro([-_/.]|['\"])|[Pp]remium|PREMIUM)" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+
+          # Hooking global filters that change behaviour outside the plugin.
+          while IFS=: read -r file line content; do
+              skip_path "$file" && continue
+              is_comment "$content" && continue
+              add_finding "BLOCKER" "Global-Behaviour" "$file" "$line" "Hooks a global filter that changes every URL/request on the site: ${content:0:120}" "Scope the change to the plugin's own output (e.g. use wp_script_add_data()/script_loader_tag only for your own handles)"
+          done < <(grep -rnIE "add_filter[[:space:]]*\([[:space:]]*['\"](clean_url|esc_url|home_url|site_url|option_active_plugins|pre_option_active_plugins)['\"]" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+
+          # Request input deciding which method runs, or naming options/transients.
+          while IFS=: read -r file line content; do
+              skip_path "$file" && continue
+              is_comment "$content" && continue
+              add_finding "WARNING" "Dynamic-Dispatch" "$file" "$line" "Method name built from a variable: ${content:0:120}. If any part comes from the request, any matching method can be called" "Map allowed actions to methods with an explicit allow-list (in_array / switch) before calling"
+          done < <(grep -rnIE '\$this->\{|call_user_func(_array)?[[:space:]]*\([[:space:]]*(array[[:space:]]*\([[:space:]]*\$this[[:space:]]*,[[:space:]]*)?\$_' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+          while IFS=: read -r file line content; do
+              skip_path "$file" && continue
+              is_comment "$content" && continue
+              if echo "$content" | grep -qE '\$_(GET|POST|REQUEST|COOKIE)|get_param|get_json_params'; then
+                  add_finding "BLOCKER" "Dynamic-Option-Name" "$file" "$line" "Request input builds an option/transient/meta name: ${content:0:120}" "Use fixed names; if a key is needed, validate it against an allow-list or hash a sanitized value with a fixed prefix"
+              else
+                  add_finding "WARNING" "Dynamic-Option-Name" "$file" "$line" "Option/transient name built from a variable: ${content:0:120}. Make sure no part comes from the request" "Use fixed names or validate the variable part against an allow-list"
+              fi
+          done < <(grep -rnIE "(update_option|add_option|set_transient|set_site_transient|update_site_option)[[:space:]]*\([[:space:]]*(\"[^\"]*\\{?\\$|'[^']*'[[:space:]]*\.[[:space:]]*\\$)" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+
+          # Extends WooCommerce (or another plugin) without the Requires Plugins header.
+          if [ -n "$MAIN_PHP" ] && ! grep -qiE '^[[:space:]/*#]*Requires Plugins:' "$MAIN_PHP"; then
+              if grep -rqIE "class_exists[[:space:]]*\([[:space:]]*['\"][\\\\]?WooCommerce['\"]|is_plugin_active[[:space:]]*\([^)]*woocommerce/woocommerce\.php|defined[[:space:]]*\([[:space:]]*['\"]WC_VERSION['\"]" "$PLUGIN_DIR" --include="*.php" --exclude-dir=vendor --exclude-dir=node_modules 2>/dev/null; then
+                  add_finding "WARNING" "Requires-Plugins" "${MAIN_PHP#"$PLUGIN_DIR"/}" "0" "Plugin depends on WooCommerce but the main file has no 'Requires Plugins: woocommerce' header" "Add 'Requires Plugins: woocommerce' to the plugin header (WordPress 6.5+), or keep a clear notice with an install/activate button"
+              fi
+          fi
 
           # Review links filtered to 5 stars.
           while IFS=: read -r file line content; do
@@ -911,6 +943,24 @@ jobs:
           done < <(printf '%s\n' "${SHIPPED[@]+"${SHIPPED[@]}"}" | tr 'A-Z' 'a-z' | sort | uniq -d || true)
           LC_ALL="$LC_SAVED"
           [ -z "$LC_ALL" ] && unset LC_ALL
+
+
+          # ─── CHECK 16b: Files loaded from public CDNs ───
+
+          echo -e "\n=== Category 16b: Calling Files Remotely (G8) ===" >&2
+
+          CDN_RE='https?://(unpkg\.com|cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com|ajax\.googleapis\.com|code\.jquery\.com|stackpath\.bootstrapcdn\.com|maxcdn\.bootstrapcdn\.com|cdn\.tailwindcss\.com|use\.fontawesome\.com|kit\.fontawesome\.com|cdn\.datatables\.net|esm\.sh|cdn\.skypack\.dev)/'
+          declare -A CDN_SEEN=()
+          while IFS=: read -r file line content; do
+              rel="${file#"$PLUGIN_DIR"/}"
+              rel="${rel#./}"
+              distignored "$rel" && continue
+              case "/$rel" in */vendor/*) continue ;; esac
+              url=$(grep -oE "${CDN_RE}[^\"'\` )\\]*" <<< "$content" | awk 'NR == 1' || true)
+              [ -n "${CDN_SEEN[$rel]:-}" ] && continue
+              CDN_SEEN[$rel]=1
+              add_finding "BLOCKER" "G8-Remote-Files" "$rel" "$line" "Loads code/assets from a public CDN: ${url:0:150}" "Bundle the file inside the plugin and load it locally (only a genuine external service may be called remotely)"
+          done < <(grep -rnIoE "https?://(unpkg\.com|cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com|ajax\.googleapis\.com|code\.jquery\.com|stackpath\.bootstrapcdn\.com|maxcdn\.bootstrapcdn\.com|cdn\.tailwindcss\.com|use\.fontawesome\.com|kit\.fontawesome\.com|cdn\.datatables\.net|esm\.sh|cdn\.skypack\.dev)/[^\"' )]{0,200}" "$PLUGIN_DIR" --include="*.php" --include="*.js" --include="*.css" --include="*.html" 2>/dev/null | grep -v node_modules/ || true)
 
 
           # ─── CHECK 17: Every external host is documented ───
