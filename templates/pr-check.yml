@@ -81,6 +81,9 @@ jobs:
       plugin-text-domain: 'your-plugin'  # ← CHANGE THIS to your plugin slug
       fail-on-warnings: false            # Set true to also block on warnings
       full-audit: ${{ inputs.full-audit == true }}  # scheduled runs always audit everything
+      ai-provider: 'auto'                # auto | gemini | claude (auto = Claude if its key is set, else Gemini)
+      # gemini-model: 'gemini-flash-lite-latest'   # optional model overrides
+      # claude-model: 'claude-opus-5-5'
     # AI review of every commit: add GEMINI_API_KEY (or ANTHROPIC_API_KEY) as a repo or org secret.
     # Only the AI keys are passed on; the repo's other secrets (e.g. SVN) are not.
     secrets:

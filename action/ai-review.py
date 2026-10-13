@@ -35,6 +35,8 @@ DEFAULT_BRANCH = os.environ.get('DEFAULT_BRANCH', '')
 TEXT_DOMAIN = os.environ.get('TEXT_DOMAIN', '')
 GEMINI_KEY = os.environ.get('GEMINI_API_KEY', '')
 ANTHROPIC_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+# auto = Claude when its key is set, otherwise Gemini. gemini / claude = that provider first.
+AI_PROVIDER = (os.environ.get('AI_PROVIDER', '') or 'auto').strip().lower()
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', '') or 'gemini-flash-lite-latest'
 CLAUDE_MODEL = os.environ.get('CLAUDE_MODEL', '') or 'claude-opus-5-5'
 FULL_AUDIT = os.environ.get('AUDIT_MODE', '').lower() == 'full'
@@ -447,10 +449,29 @@ def write_report(status, provider, summary, findings, files, truncated, label, n
     print(report)
 
 
+def provider_order():
+    """Providers to try, preferred first; only those with a key. The second is the fallback."""
+    available = {'claude': bool(ANTHROPIC_KEY), 'gemini': bool(GEMINI_KEY)}
+    first = AI_PROVIDER if AI_PROVIDER in available else ('claude' if ANTHROPIC_KEY else 'gemini')
+    if AI_PROVIDER not in ('auto', 'claude', 'gemini'):
+        print(f'Unknown ai-provider "{AI_PROVIDER}"; using auto.')
+    order = [first, 'gemini' if first == 'claude' else 'claude']
+    if not available[first]:
+        print(f'ai-provider is {first} but its API key is not set; using the other provider.')
+    return [name for name in order if available[name]]
+
+
 def review(rules, prompt):
-    if ANTHROPIC_KEY:
-        return review_with_claude(rules, prompt)
-    return review_with_gemini(rules, prompt)
+    errors = []
+    for name in provider_order():
+        try:
+            if name == 'claude':
+                return review_with_claude(rules, prompt)
+            return review_with_gemini(rules, prompt)
+        except Exception as err:  # noqa: BLE001 - try the other provider before giving up
+            print(f'{name} review failed: {err}')
+            errors.append(f'{name}: {err}')
+    raise RuntimeError('; '.join(errors) or 'no AI provider available')
 
 
 def run_audit(rules):
@@ -465,7 +486,7 @@ def run_audit(rules):
     for attempt in range(2):
         retry = []
         for n, (i, batch) in enumerate(pending):
-            if (n or attempt) and not ANTHROPIC_KEY:
+            if (n or attempt) and provider_order()[:1] == ['gemini']:
                 time.sleep(BATCH_PAUSE_SECONDS)
             names = sorted({b.split('\n', 1)[0].replace('### FILE: ', '').split(' (part ')[0] for b in batch})
             print(f'Audit batch {i + 1}/{len(batches)}: {len(names)} file(s)' + (' (retry)' if attempt else ''))
