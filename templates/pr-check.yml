@@ -25,7 +25,7 @@ name: WP.org Compliance
 on:
   workflow_dispatch:
   push:
-    branches: [main, master, develop]
+    branches: ['**']   # every commit pushed to any branch
     paths:
       - '.github/workflows/wporg-compliance.yml'
       - '**.php'

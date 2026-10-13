@@ -95,6 +95,19 @@ jobs:
             cs2pr phpcs-report.xml || true
           fi
 
+      - name: Write PHPCS report to run summary
+        if: always()
+        run: |
+          {
+            echo "## PHPCS / WordPress Coding Standards"
+            echo ""
+            echo "Style findings are informational and do not fail the check."
+            echo ""
+            echo '```'
+            if [ -f phpcs-summary.txt ]; then head -c 60000 phpcs-summary.txt; else echo "No PHPCS report was produced."; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload PHPCS report
         if: always()
         uses: actions/upload-artifact@v4
@@ -598,6 +611,50 @@ jobs:
           else
             echo "result=PASS" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Write compliance report to run summary
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+
+          try:
+              findings = json.load(open('compliance-findings.json', encoding='utf-8'))
+          except Exception:
+              findings = None
+
+          print('## WP.org Compliance Report')
+          print()
+          if findings is None:
+              print('The compliance checker did not produce a report. Open the "Run WP.org compliance checks" step log for details.')
+              raise SystemExit
+
+          def cell(value, limit):
+              return str(value).replace('|', '\\|').replace('\n', ' ')[:limit]
+
+          blockers = [f for f in findings if f.get('severity') == 'BLOCKER']
+          warnings = [f for f in findings if f.get('severity') == 'WARNING']
+          status = 'FAIL: fix the blockers below before merging' if blockers else 'PASS: no WP.org blockers found'
+          print(f'**Result: {status}**')
+          print()
+          print('| Blockers | Warnings |')
+          print('|---|---|')
+          print(f'| {len(blockers)} | {len(warnings)} |')
+          for title, rows in (('Blockers (would get the plugin closed on WP.org)', blockers), ('Warnings (review recommended)', warnings)):
+              if not rows:
+                  continue
+              print()
+              print(f'### {title}')
+              print()
+              print('| Category | File | Issue | How to fix |')
+              print('|---|---|---|---|')
+              for f in rows[:200]:
+                  where = f"{f.get('file', '')}:{f.get('line', 0)}" if f.get('line') else f.get('file', '')
+                  print(f"| {cell(f.get('category', ''), 40)} | `{cell(where, 120)}` | {cell(f.get('message', ''), 200)} | {cell(f.get('fix', ''), 150)} |")
+              if len(rows) > 200:
+                  print()
+                  print(f'_{len(rows) - 200} more in the compliance-report artifact._')
+          PY
 
       - name: Upload compliance report
         if: always()

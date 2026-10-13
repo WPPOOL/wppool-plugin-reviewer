@@ -253,7 +253,7 @@ cp /path/to/wppool-plugin-reviewer/templates/pr-check.yml .github/workflows/wpor
 
 4. (Recommended) In repo Settings → Branches → Branch protection rules, add "compliance / Compliance Gate" as required status check
 
-No tokens, secrets or deploy keys are needed. The workflow runs on pushes to main/master/develop, on pull requests, and manually (Actions → WP.org Compliance → Run workflow). Reports: run → Summary → Artifacts (`compliance-report`, `phpcs-report`).
+No tokens, secrets or deploy keys are needed. The workflow scans every commit pushed to any branch, every pull request (with a findings comment), and manual runs (Actions → WP.org Compliance → Run workflow). Each run shows a readable report on its Summary page; the raw files are under Artifacts (`compliance-report`, `phpcs-report`).
 
 ### What It Checks on Every PR
 
