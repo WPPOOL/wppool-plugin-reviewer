@@ -182,7 +182,7 @@ done < <(grep -rnE "add_action\s*\(\s*['\"]wp_ajax_(nopriv_)?" "$PLUGIN_DIR" --i
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
     # Look at the whole call (up to the next register_rest_route or 40 lines).
-    call=$(sed -n "${line},$((line+40))p" "$file" 2>/dev/null | awk 'NR>1 && /register_rest_route[[:space:]]*\(/{exit} {print}')
+    call=$(awk -v s="$line" 'NR > s + 40 { exit } NR > s && /register_rest_route[[:space:]]*\(/ { exit } NR >= s { print }' "$file" 2>/dev/null || true)
     has_perm=$(echo "$call" | grep -c "permission_callback" || true)
     # Route args passed in a variable (e.g. a route table looped over): accept when
     # the same file defines permission_callback for those args.
@@ -208,7 +208,7 @@ done < <(grep -rnE '^\s*echo\s+\$' "$PLUGIN_DIR" --include="*.php" 2>/dev/null |
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
     # The statement may continue on the next lines.
-    statement=$(sed -n "${line},$((line+6))p" "$file" 2>/dev/null | awk '{print} /;/{exit}')
+    statement=$(awk -v s="$line" 'NR >= s && NR <= s + 6 { print; if (/;/) exit } NR > s + 6 { exit }' "$file" 2>/dev/null || true)
     echo "$statement" | grep -qE -- "->prepare\s*\(" && continue
     # Query passed in a variable that was built with prepare() just above.
     query_var=$(echo "$content" | grep -oE -- '->(query|get_results|get_row|get_var|get_col)\s*\(\s*\$[A-Za-z_][A-Za-z0-9_]*' | grep -oE '\$[A-Za-z_][A-Za-z0-9_]*$' | head -1 || true)
@@ -243,7 +243,7 @@ while IFS= read -r file; do
     has_guard=$(head -20 "$file" | grep -cE "defined\s*\(\s*['\"]ABSPATH['\"]" || true)
     if [ "${has_guard:-0}" -eq 0 ]; then
         # Code lines, ignoring the open/close tags, comments and blank lines.
-        first_code=$(sed -e 's/<?php//' -e 's/?>//' "$file" 2>/dev/null | sed -E -e '/^\s*(\/\/|#|\/?\*)/d' -e '/^\s*$/d' | head -1)
+        first_code=$(awk '{ gsub(/<\?php|\?>/, "") } /^[[:space:]]*(\/\/|#|\/?\*)/ || /^[[:space:]]*$/ { next } { print; exit }' "$file" 2>/dev/null || true)
         # Empty / "Silence is golden" files and data files (<?php return [...]) are safe.
         [ -z "$first_code" ] && continue
         echo "$first_code" | grep -qE '^\s*return[[:space:](\[]' && continue
