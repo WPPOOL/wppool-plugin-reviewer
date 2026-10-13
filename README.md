@@ -259,15 +259,16 @@ No tokens, secrets or deploy keys are needed. The workflow scans every commit pu
 
 With a `GEMINI_API_KEY` (or `ANTHROPIC_API_KEY`) repo or org secret, every commit and PR also gets an AI review: the changed files, plus `readme.txt` and the main plugin file for context, are sent with the rules in `action/ai-review-rules.md` and the skill's knowledge files (closure case studies, compliant free/pro pattern, official guidelines + Plugin Check, grep patterns) to Gemini (`gemini-flash-lite-latest` by default, which works on the free tier; set `gemini-model` for a stronger model once billing is enabled) or Claude (`claude-opus-5-5`, preferred when its key is set). Findings appear in the run Summary and the PR comment; AI blockers fail the Compliance Gate (`fail-on-ai-blockers: false` to report only). If the AI provider is down, the run shows a warning instead of blocking. Only the AI keys are passed to the workflow; other repo secrets are not.
 
-### Choosing the AI: Gemini or Claude
+### Choosing the AI: Gemini, ChatGPT (OpenAI) or Claude
 
-The AI review works with either provider. Add one key (or both) as a GitHub secret and pick the provider in your workflow file.
+The AI review works with any of the three. Add one key (or both) as a GitHub secret and pick the provider in your workflow file.
 
 **1. Get a key**
 
 | Provider | Where to create the key | Cost |
 |---|---|---|
 | Google Gemini | https://aistudio.google.com/apikey | Free tier works (default model `gemini-flash-lite-latest`) |
+| OpenAI (ChatGPT) | https://platform.openai.com/api-keys (add credit at https://platform.openai.com/settings/organization/billing) | Paid per use (default model `gpt-5-mini`). A ChatGPT Plus subscription does not include API credit |
 | Anthropic Claude | https://console.anthropic.com/settings/keys (add credits at https://console.anthropic.com/settings/billing) | Paid per use; stronger reviews (default model `claude-opus-5-5`) |
 
 **2. Add it to GitHub** (never paste a key into code, chat or a commit)
@@ -278,27 +279,31 @@ The AI review works with either provider. Add one key (or both) as a GitHub secr
 | Secret name (exact) | Provider |
 |---|---|
 | `GEMINI_API_KEY` | Gemini |
+| `OPENAI_API_KEY` | OpenAI (ChatGPT) |
 | `ANTHROPIC_API_KEY` | Claude |
 
 **3. Pick the provider** in `.github/workflows/wporg-compliance.yml`:
 
 ```yaml
     with:
-      ai-provider: 'auto'     # auto | gemini | claude
+      ai-provider: 'auto'     # auto | gemini | openai | claude
       # gemini-model: 'gemini-flash-lite-latest'
+      # openai-model: 'gpt-5-mini'
       # claude-model: 'claude-opus-5-5'   # e.g. 'claude-sonnet-5-5' to lower cost
     secrets:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 | `ai-provider` | Uses | Fallback |
 |---|---|---|
-| `auto` (default) | Claude if `ANTHROPIC_API_KEY` is set, otherwise Gemini | the other one, if its key is set |
-| `gemini` | Gemini | Claude, if its key is set |
-| `claude` | Claude | Gemini, if its key is set |
+| `auto` (default) | the first provider with a key, in this order: Claude, OpenAI, Gemini | the others with a key |
+| `gemini` | Gemini | Claude, then OpenAI, if their keys are set |
+| `openai` | OpenAI (ChatGPT) | Claude, then Gemini, if their keys are set |
+| `claude` | Claude | OpenAI, then Gemini, if their keys are set |
 
-If the chosen provider has no key, the other one is used. If the chosen provider fails (outage, quota), the other one is tried. With no key at all the AI step is skipped and only the pattern checks run. The run Summary shows which provider and model reviewed the code (e.g. `Reviewed ... with gemini (gemini-flash-lite-latest)`).
+If the chosen provider has no key, the next provider with a key is used. If it fails (outage, quota, no credit), the next one is tried. With no key at all the AI step is skipped and only the pattern checks run. The run Summary shows which provider and model reviewed the code (e.g. `Reviewed ... with gemini (gemini-flash-lite-latest)`).
 
 ### Full-Plugin AI Audit (weekly + on demand)
 
@@ -379,8 +384,8 @@ Bot posts detailed comment on every PR:
 | `ai-review` | `true` | Run the AI review (needs an AI key secret) |
 | `full-audit` | `false` | AI-review every shipped file (scheduled runs always do) |
 | `fail-on-ai-blockers` | `true` | AI blockers fail the Compliance Gate |
-| `ai-provider` | `auto` | `auto`, `gemini` or `claude` (see "Choosing the AI") |
-| `gemini-model` / `claude-model` | `''` | Override the AI model |
+| `ai-provider` | `auto` | `auto`, `gemini`, `openai` or `claude` (see "Choosing the AI") |
+| `gemini-model` / `openai-model` / `claude-model` | `''` | Override the AI model |
 
 ### Adding to All WPPOOL Plugins
 

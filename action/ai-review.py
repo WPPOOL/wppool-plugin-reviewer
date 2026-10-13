@@ -2,8 +2,8 @@
 """AI review of the plugin code changed by a commit or pull request, or of the whole plugin.
 
 Sends the diff (plus the full changed files, readme.txt and the main plugin file for context),
-the WPPOOL review rules and the reviewer skill's knowledge files to Claude (if
-ANTHROPIC_API_KEY is set) or Gemini (if GEMINI_API_KEY is set) and writes:
+the WPPOOL review rules and the reviewer skill's knowledge files to Claude
+(ANTHROPIC_API_KEY), OpenAI / ChatGPT (OPENAI_API_KEY) or Gemini (GEMINI_API_KEY) and writes:
 
   ai-findings.json   structured findings
   ai-report.md       Markdown report (run summary + PR comment)
@@ -35,10 +35,12 @@ DEFAULT_BRANCH = os.environ.get('DEFAULT_BRANCH', '')
 TEXT_DOMAIN = os.environ.get('TEXT_DOMAIN', '')
 GEMINI_KEY = os.environ.get('GEMINI_API_KEY', '')
 ANTHROPIC_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
-# auto = Claude when its key is set, otherwise Gemini. gemini / claude = that provider first.
+OPENAI_KEY = os.environ.get('OPENAI_API_KEY', '')
+# auto = the first provider with a key in PROVIDERS order; gemini / claude / openai = that one first.
 AI_PROVIDER = (os.environ.get('AI_PROVIDER', '') or 'auto').strip().lower()
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', '') or 'gemini-flash-lite-latest'
 CLAUDE_MODEL = os.environ.get('CLAUDE_MODEL', '') or 'claude-opus-5-5'
+OPENAI_MODEL = os.environ.get('OPENAI_MODEL', '') or 'gpt-5-mini'
 FULL_AUDIT = os.environ.get('AUDIT_MODE', '').lower() == 'full'
 
 # Reference material from the wppool-plugin-reviewer skill, appended to the rules.
@@ -361,6 +363,52 @@ def review_with_gemini(rules, prompt):
     raise RuntimeError('Gemini API kept failing')
 
 
+def pick_openai_model():
+    """Newest available GPT 'mini' chat model, for when the configured one does not exist."""
+    req = urllib.request.Request('https://api.openai.com/v1/models',
+                                 headers={'Authorization': f'Bearer {OPENAI_KEY}'})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        models = [m.get('id', '') for m in json.loads(resp.read().decode('utf-8')).get('data', [])]
+    usable = [m for m in models if m.startswith('gpt-') and 'mini' in m
+              and not any(x in m for x in ('audio', 'realtime', 'search', 'transcribe', 'tts', 'image', 'nano'))]
+    return sorted(usable)[-1] if usable else None
+
+
+def review_with_openai(rules, prompt):
+    model = OPENAI_MODEL
+    for attempt in range(5):
+        payload = {
+            'model': model,
+            'messages': [{'role': 'system', 'content': rules}, {'role': 'user', 'content': prompt}],
+            'response_format': {'type': 'json_object'},
+        }
+        try:
+            data = http_json('https://api.openai.com/v1/chat/completions', payload,
+                             {'Authorization': f'Bearer {OPENAI_KEY}'})
+            choice = data['choices'][0]
+            if choice.get('finish_reason') == 'length':
+                raise RuntimeError('OpenAI response was cut off (output too long)')
+            return json.loads(choice['message']['content']), f"openai ({data.get('model', model)})"
+        except urllib.error.HTTPError as err:
+            body = err.read().decode('utf-8', 'replace')
+            print(f'OpenAI API error {err.code} for {model}:')
+            print(body)
+            if err.code == 404 and attempt == 0:
+                fallback = pick_openai_model()
+                if fallback and fallback != model:
+                    print(f'OpenAI model {model} not available; using {fallback}.')
+                    model = fallback
+                    continue
+            if err.code == 429 and 'insufficient_quota' in body:
+                raise RuntimeError('OpenAI account has no credit (insufficient_quota)')
+            if err.code in (429, 500, 502, 503) and attempt < 3:
+                time.sleep(15 * (attempt + 1))
+                continue
+            first = json.loads(body).get('error', {}).get('message', body) if body.startswith('{') else body
+            raise RuntimeError(f'OpenAI API error {err.code}: {first[:400]}')
+    raise RuntimeError('OpenAI API kept failing')
+
+
 def review_with_claude(rules, prompt):
     import anthropic
 
@@ -449,15 +497,21 @@ def write_report(status, provider, summary, findings, files, truncated, label, n
     print(report)
 
 
+# Order used by ai-provider=auto and for fallbacks.
+PROVIDERS = ('claude', 'openai', 'gemini')
+
+
 def provider_order():
-    """Providers to try, preferred first; only those with a key. The second is the fallback."""
-    available = {'claude': bool(ANTHROPIC_KEY), 'gemini': bool(GEMINI_KEY)}
-    first = AI_PROVIDER if AI_PROVIDER in available else ('claude' if ANTHROPIC_KEY else 'gemini')
-    if AI_PROVIDER not in ('auto', 'claude', 'gemini'):
+    """Providers to try, preferred first; only those with a key. The rest are fallbacks."""
+    available = {'claude': bool(ANTHROPIC_KEY), 'openai': bool(OPENAI_KEY), 'gemini': bool(GEMINI_KEY)}
+    if AI_PROVIDER not in ('auto',) + PROVIDERS:
         print(f'Unknown ai-provider "{AI_PROVIDER}"; using auto.')
-    order = [first, 'gemini' if first == 'claude' else 'claude']
-    if not available[first]:
-        print(f'ai-provider is {first} but its API key is not set; using the other provider.')
+    order = list(PROVIDERS)
+    if AI_PROVIDER in PROVIDERS:
+        order.remove(AI_PROVIDER)
+        order.insert(0, AI_PROVIDER)
+        if not available[AI_PROVIDER]:
+            print(f'ai-provider is {AI_PROVIDER} but its API key is not set; using the next provider with a key.')
     return [name for name in order if available[name]]
 
 
@@ -467,6 +521,8 @@ def review(rules, prompt):
         try:
             if name == 'claude':
                 return review_with_claude(rules, prompt)
+            if name == 'openai':
+                return review_with_openai(rules, prompt)
             return review_with_gemini(rules, prompt)
         except Exception as err:  # noqa: BLE001 - try the other provider before giving up
             print(f'{name} review failed: {err}')
@@ -519,8 +575,8 @@ def run_audit(rules):
 
 
 def main():
-    if not GEMINI_KEY and not ANTHROPIC_KEY:
-        write_report('skipped', '', '', [], [], [], '', 'No AI key configured (add a GEMINI_API_KEY or ANTHROPIC_API_KEY secret to enable the AI review).')
+    if not GEMINI_KEY and not ANTHROPIC_KEY and not OPENAI_KEY:
+        write_report('skipped', '', '', [], [], [], '', 'No AI key configured (add a GEMINI_API_KEY, OPENAI_API_KEY or ANTHROPIC_API_KEY secret to enable the AI review).')
         return
     rules = load_rules()
     if FULL_AUDIT:
