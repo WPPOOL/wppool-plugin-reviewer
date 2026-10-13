@@ -39,7 +39,7 @@ on:
         type: boolean
         default: true
       gemini-model:
-        description: 'Gemini model for the AI review (default: gemini-2.5-flash, falls back to the newest Flash model)'
+        description: 'Gemini model for the AI review (default: gemini-flash-lite-latest, which has free-tier quota; set a stronger model if billing is enabled)'
         required: false
         type: string
         default: ''
@@ -91,10 +91,27 @@ jobs:
             EXTRA_ARGS="--runtime-set text_domain ${{ inputs.plugin-text-domain }}"
           fi
 
+          # Skip what never ships to WP.org: dependencies, build output, tests, docs,
+          # generated files, plus everything in the plugin's .distignore.
+          IGNORE="*/vendor/*,*/node_modules/*,*/build/*,*/dist/*,*/tests/*,*/test/*,*/docs/*,*/ai-docs/*,*/.github/*,*/languages/*,*.min.js,*.asset.php"
+          DISTIGNORE="${{ inputs.plugin-dir }}/.distignore"
+          if [ -f "$DISTIGNORE" ]; then
+            while IFS= read -r pattern || [ -n "$pattern" ]; do
+              pattern="$(echo "$pattern" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              [ -z "$pattern" ] && continue
+              case "$pattern" in \#*) continue ;; esac
+              pattern="${pattern#/}"
+              pattern="${pattern%/}"
+              pattern="${pattern//\*\*/*}"
+              IGNORE="$IGNORE,*/$pattern/*,*/$pattern"
+            done < "$DISTIGNORE"
+          fi
+          echo "PHPCS ignores: $IGNORE"
+
           phpcs \
             --standard=${{ inputs.phpcs-standard }} \
             --extensions=php \
-            --ignore=*/vendor/*,*/node_modules/*,*/build/*,*/dist/* \
+            --ignore="$IGNORE"             --basepath="${{ inputs.plugin-dir }}" \
             --report=checkstyle \
             --report-file=phpcs-report.xml \
             $EXTRA_ARGS \
@@ -104,7 +121,7 @@ jobs:
           phpcs \
             --standard=${{ inputs.phpcs-standard }} \
             --extensions=php \
-            --ignore=*/vendor/*,*/node_modules/*,*/build/*,*/dist/* \
+            --ignore="$IGNORE"             --basepath="${{ inputs.plugin-dir }}" \
             --report=summary \
             $EXTRA_ARGS \
             ${{ inputs.plugin-dir }} > phpcs-summary.txt 2>&1 || true
@@ -737,10 +754,12 @@ jobs:
           BEFORE = os.environ.get('BEFORE_SHA', '')
           HEAD = os.environ.get('HEAD_SHA', '') or 'HEAD'
           BASE_REF = os.environ.get('BASE_REF', '')
+          REF_NAME = os.environ.get('REF_NAME', '')
+          DEFAULT_BRANCH = os.environ.get('DEFAULT_BRANCH', '')
           TEXT_DOMAIN = os.environ.get('TEXT_DOMAIN', '')
           GEMINI_KEY = os.environ.get('GEMINI_API_KEY', '')
           ANTHROPIC_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
-          GEMINI_MODEL = os.environ.get('GEMINI_MODEL', '') or 'gemini-2.5-flash'
+          GEMINI_MODEL = os.environ.get('GEMINI_MODEL', '') or 'gemini-flash-lite-latest'
           CLAUDE_MODEL = os.environ.get('CLAUDE_MODEL', '') or 'claude-opus-5-5'
 
           CODE_EXTENSIONS = ('.php', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.vue')
@@ -828,6 +847,12 @@ jobs:
                   base = git('merge-base', f'origin/{BASE_REF}', HEAD).strip()
                   if base:
                       return base, HEAD, f'pull request against {BASE_REF}'
+              if EVENT == 'push' and DEFAULT_BRANCH and REF_NAME and REF_NAME != DEFAULT_BRANCH:
+                  # Feature branch: review everything the branch changes, like a pull request would.
+                  git('fetch', '--no-tags', '--depth=200', 'origin', DEFAULT_BRANCH)
+                  base = git('merge-base', f'origin/{DEFAULT_BRANCH}', HEAD).strip()
+                  if base:
+                      return base, HEAD, f'branch {REF_NAME} compared to {DEFAULT_BRANCH}'
               if EVENT == 'push' and BEFORE and BEFORE != zero and git_ok('cat-file', '-e', f'{BEFORE}^{{commit}}'):
                   return BEFORE, HEAD, 'commits in this push'
               if git_ok('rev-parse', '--verify', f'{HEAD}~1'):
@@ -1190,6 +1215,8 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
           BASE_REF: ${{ github.base_ref }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           TEXT_DOMAIN: ${{ inputs.plugin-text-domain }}
           PLUGIN_DIR: ${{ inputs.plugin-dir }}
         run: |

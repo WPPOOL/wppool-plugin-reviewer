@@ -27,10 +27,12 @@ EVENT = os.environ.get('EVENT_NAME', '')
 BEFORE = os.environ.get('BEFORE_SHA', '')
 HEAD = os.environ.get('HEAD_SHA', '') or 'HEAD'
 BASE_REF = os.environ.get('BASE_REF', '')
+REF_NAME = os.environ.get('REF_NAME', '')
+DEFAULT_BRANCH = os.environ.get('DEFAULT_BRANCH', '')
 TEXT_DOMAIN = os.environ.get('TEXT_DOMAIN', '')
 GEMINI_KEY = os.environ.get('GEMINI_API_KEY', '')
 ANTHROPIC_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
-GEMINI_MODEL = os.environ.get('GEMINI_MODEL', '') or 'gemini-2.5-flash'
+GEMINI_MODEL = os.environ.get('GEMINI_MODEL', '') or 'gemini-flash-lite-latest'
 CLAUDE_MODEL = os.environ.get('CLAUDE_MODEL', '') or 'claude-opus-5-5'
 
 CODE_EXTENSIONS = ('.php', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.vue')
@@ -118,6 +120,12 @@ def diff_range():
         base = git('merge-base', f'origin/{BASE_REF}', HEAD).strip()
         if base:
             return base, HEAD, f'pull request against {BASE_REF}'
+    if EVENT == 'push' and DEFAULT_BRANCH and REF_NAME and REF_NAME != DEFAULT_BRANCH:
+        # Feature branch: review everything the branch changes, like a pull request would.
+        git('fetch', '--no-tags', '--depth=200', 'origin', DEFAULT_BRANCH)
+        base = git('merge-base', f'origin/{DEFAULT_BRANCH}', HEAD).strip()
+        if base:
+            return base, HEAD, f'branch {REF_NAME} compared to {DEFAULT_BRANCH}'
     if EVENT == 'push' and BEFORE and BEFORE != zero and git_ok('cat-file', '-e', f'{BEFORE}^{{commit}}'):
         return BEFORE, HEAD, 'commits in this push'
     if git_ok('rev-parse', '--verify', f'{HEAD}~1'):

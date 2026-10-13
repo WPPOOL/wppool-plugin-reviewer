@@ -257,7 +257,7 @@ No tokens, secrets or deploy keys are needed. The workflow scans every commit pu
 
 ### AI Review (every commit)
 
-With a `GEMINI_API_KEY` (or `ANTHROPIC_API_KEY`) repo or org secret, every commit and PR also gets an AI review: the changed files are sent with the rules in `action/ai-review-rules.md` (built from the WP.org closures, the official guidelines and the security skill) to Gemini (`gemini-2.5-flash` by default) or Claude (`claude-opus-5-5`, preferred when its key is set). Findings appear in the run Summary and the PR comment; AI blockers fail the Compliance Gate (`fail-on-ai-blockers: false` to report only). If the AI provider is down, the run shows a warning instead of blocking. Only the AI keys are passed to the workflow; other repo secrets are not.
+With a `GEMINI_API_KEY` (or `ANTHROPIC_API_KEY`) repo or org secret, every commit and PR also gets an AI review: the changed files are sent with the rules in `action/ai-review-rules.md` (built from the WP.org closures, the official guidelines and the security skill) to Gemini (`gemini-flash-lite-latest` by default, which works on the free tier; set `gemini-model` for a stronger model once billing is enabled) or Claude (`claude-opus-5-5`, preferred when its key is set). Findings appear in the run Summary and the PR comment; AI blockers fail the Compliance Gate (`fail-on-ai-blockers: false` to report only). If the AI provider is down, the run shows a warning instead of blocking. Only the AI keys are passed to the workflow; other repo secrets are not.
 
 ### What It Checks on Every PR
 
