@@ -255,6 +255,10 @@ cp /path/to/wppool-plugin-reviewer/templates/pr-check.yml .github/workflows/wpor
 
 No tokens, secrets or deploy keys are needed. The workflow scans every commit pushed to any branch, every pull request (with a findings comment), and manual runs (Actions → WP.org Compliance → Run workflow). Each run shows a readable report on its Summary page; the raw files are under Artifacts (`compliance-report`, `phpcs-report`).
 
+### AI Review (every commit)
+
+With a `GEMINI_API_KEY` (or `ANTHROPIC_API_KEY`) repo or org secret, every commit and PR also gets an AI review: the changed files are sent with the rules in `action/ai-review-rules.md` (built from the WP.org closures, the official guidelines and the security skill) to Gemini (`gemini-2.5-flash` by default) or Claude (`claude-opus-5-5`, preferred when its key is set). Findings appear in the run Summary and the PR comment; AI blockers fail the Compliance Gate (`fail-on-ai-blockers: false` to report only). If the AI provider is down, the run shows a warning instead of blocking. Only the AI keys are passed to the workflow; other repo secrets are not.
+
 ### What It Checks on Every PR
 
 | # | Check | Type | Blocks PR? |

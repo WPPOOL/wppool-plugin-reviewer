@@ -12,7 +12,7 @@
 # Setup:
 #   1. Copy this file to .github/workflows/wporg-compliance.yml
 #   2. Update plugin-text-domain below to match your plugin slug
-#   3. (Optional) Add ANTHROPIC_API_KEY secret for AI-powered review
+#   3. Add a GEMINI_API_KEY (or ANTHROPIC_API_KEY) secret to enable the AI review
 #   4. Enable "Require status checks" in repo branch protection rules
 #      and add "compliance / Compliance Gate" as required check
 #
@@ -60,5 +60,8 @@ jobs:
       php-version: '8.0'                 # Match your plugin's minimum PHP
       plugin-text-domain: 'your-plugin'  # ← CHANGE THIS to your plugin slug
       fail-on-warnings: false            # Set true to also block on warnings
+    # AI review of every commit: add GEMINI_API_KEY (or ANTHROPIC_API_KEY) as a repo or org secret.
+    # Only the AI keys are passed on; the repo's other secrets (e.g. SVN) are not.
     secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}  # Optional; remove if not using AI review
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
