@@ -116,3 +116,13 @@ BLOCKER:
 - Method names that merely contain words like `is_process_running` or `process`.
 - Code in tests, build tooling, vendor or node_modules.
 - `apply_filters()` defaults that are the free plugin's real working value.
+- Before reporting unsanitized input, trace the variable back to where it came from in the
+  file. Input that went through a sanitizing wrapper earlier in the function (for example
+  `$inputs = $this->io()->sanitize( $request->get_params() )`, a recursive sanitizer, or a
+  REST `sanitize_callback`) is sanitized; saving only allow-listed keys from it is fine.
+- `dangerouslySetInnerHTML` / `innerHTML` is only a problem when the HTML contains data from
+  users, the database, URLs or an API. Strings the code builds itself from literals, numbers
+  and translations are not XSS.
+- A missing translation wrapper, naming or style issue is never a BLOCKER.
+- If you cannot point to the exact untrusted source that reaches the sink, it is at most a
+  WARNING.

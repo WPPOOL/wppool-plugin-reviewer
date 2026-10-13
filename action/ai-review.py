@@ -501,12 +501,14 @@ def run_audit(rules):
                 findings += result['findings']
             if result.get('summary'):
                 summaries.append(str(result['summary']))
-        pending = retry
+        # Retry in halves: a request that keeps failing is often just too big for the model.
+        pending = [(i, part) for i, batch in retry
+                   for part in ((batch[:len(batch) // 2], batch[len(batch) // 2:]) if len(batch) > 1 else (batch,))]
         if not pending:
             break
         if attempt == 0:
             # Provider overload (503) or rate limits usually clear within a couple of minutes.
-            print(f'{len(pending)} batch(es) failed; retrying once in 2 minutes.')
+            print(f'{len(retry)} batch(es) failed; retrying in {len(pending)} smaller request(s) in 2 minutes.')
             time.sleep(120)
     failed = sorted({b.split('\n', 1)[0].replace('### FILE: ', '').split(' (part ')[0]
                      for _, batch in pending for b in batch})
