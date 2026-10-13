@@ -65,6 +65,12 @@ skip_path() {
     case "/$rel" in
         */vendor/*|*/node_modules/*|*/.git/*|*/.github/*) return 0 ;;
     esac
+    distignored "$rel"
+}
+
+# True when a path (relative to the plugin root) is excluded by .distignore.
+distignored() {
+    local rel="$1"
     local pattern glob
     for pattern in "${DISTIGNORE_PATTERNS[@]+"${DISTIGNORE_PATTERNS[@]}"}"; do
         glob="${pattern#/}"
@@ -267,7 +273,7 @@ echo -e "\n=== Category 5: Plugin Updater ===" >&2
 while IFS=: read -r file line content; do
     skip_path "$file" && continue
     add_finding "BLOCKER" "Plugin-Updater" "$file" "$line" "Custom plugin updater detected (forbidden by G8): $(echo "$content" | head -c 100)" "Remove custom updater; use WP.org update system only"
-done < <(grep -rnE "(plugin-update-checker|WP_GitHub_Updater|WPGitHubUpdater|PucFactory|YahnisElsts|pre_set_site_transient_update_plugins|site_transient_update_plugins)" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+done < <(grep -rnE "(plugin-update-checker|WP_GitHub_Updater|WPGitHubUpdater|PucFactory|YahnisElsts|pre_set_site_transient_update_plugins|site_transient_update_plugins|add_filter\s*\(\s*['\"]plugins_api['\"])" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 
 # ─── CHECK 6: Forbidden Files ───
@@ -399,6 +405,352 @@ while IFS=: read -r file line content; do
     skip_path "$file" && continue
     add_finding "WARNING" "Headway-Widget" "$file" "$line" "Headway changelog widget loads external CDN; needs disclosure" "Add to readme == External services == OR make opt-in"
 done < <(grep -rnE "(headway|headwayapp\.co|HW_widget)" "$PLUGIN_DIR" --include="*.php" --include="*.js" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+
+
+# ─── Shared data for the repo-level checks below ───
+
+# Every file WP.org would receive: all files except dependency/VCS folders and .distignore
+# entries. Unlike skip_path(), vendor/ is included because bundled libraries ship too.
+SHIPPED=()
+while IFS= read -r f; do
+    rel="${f#"$PLUGIN_DIR"/}"
+    rel="${rel#./}"
+    distignored "$rel" && continue
+    SHIPPED+=("$rel")
+done < <(find "$PLUGIN_DIR" -type f -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/.github/*" 2>/dev/null | sort || true)
+
+# True when a shipped file matches the glob (relative to the plugin root).
+ships() {
+    local want="$1" rel
+    for rel in "${SHIPPED[@]+"${SHIPPED[@]}"}"; do
+        # shellcheck disable=SC2053
+        [[ "$rel" == $want ]] && return 0
+    done
+    return 1
+}
+
+README_TXT=""
+[ -f "$PLUGIN_DIR/readme.txt" ] && README_TXT=$(tr -d '\r' < "$PLUGIN_DIR/readme.txt")
+readme_has() { grep -qiE -- "$1" <<< "$README_TXT"; }
+
+MAIN_PHP=$(grep -lE '^[[:space:]/*#]*Plugin Name:' "$PLUGIN_DIR"/*.php 2>/dev/null | awk 'NR == 1' || true)
+TEXT_DOMAIN="${TEXT_DOMAIN:-}"
+if [ -z "$TEXT_DOMAIN" ] && [ -n "$MAIN_PHP" ]; then
+    TEXT_DOMAIN=$(awk 'tolower($0) ~ /text domain:/ { sub(/.*[Tt]ext [Dd]omain:/, ""); gsub(/[[:space:]\r]/, ""); print; exit }' "$MAIN_PHP" || true)
+fi
+
+is_comment() {
+    local trimmed="${1#"${1%%[![:space:]]*}"}"
+    [[ "$trimmed" == //* || "$trimmed" == \** || "$trimmed" == /\** || "$trimmed" == \#* ]]
+}
+
+PY=""
+for cand in python3 python; do
+    if command -v "$cand" >/dev/null 2>&1 && "$cand" -c 'import json' >/dev/null 2>&1; then
+        PY="$cand"
+        break
+    fi
+done
+
+
+# ─── CHECK 13: Source code for compiled assets (Guideline 4) ───
+
+echo -e "\n=== Category 13: Source Code & Build (G4) ===" >&2
+
+BUILT_JS=()
+SOURCE_FILES=0
+for rel in "${SHIPPED[@]+"${SHIPPED[@]}"}"; do
+    case "/$rel" in
+        */vendor/*) continue ;;
+        *.min.js|*/build/*.js|*/dist/*.js) BUILT_JS+=("$rel"); continue ;;
+        *.config.js|*/webpack.*.js|*/gulpfile.js|*/Gruntfile.js) continue ;;
+        *.js) grep -qE '__webpack_require__|webpackChunk|webpackJsonp' "$PLUGIN_DIR/$rel" 2>/dev/null && { BUILT_JS+=("$rel"); continue; }
+              SOURCE_FILES=$((SOURCE_FILES + 1)) ;;
+        *.jsx|*.ts|*.tsx|*.vue|*.scss|*.sass|*.less) SOURCE_FILES=$((SOURCE_FILES + 1)) ;;
+    esac
+done
+
+if [ "${#BUILT_JS[@]}" -gt 0 ]; then
+    if readme_has '(github\.com|gitlab\.com|bitbucket\.org)/'; then
+        : # Public source repository linked from readme.txt.
+    elif ! ships "package.json" || [ "$SOURCE_FILES" -eq 0 ]; then
+        add_finding "BLOCKER" "G4-Source" "${BUILT_JS[0]}" "0" "Compiled/minified JS ships (${#BUILT_JS[@]} file(s)) without its human-readable source (package.json and the source files are not shipped, and readme.txt links no public repository)" "Ship the source (src/, package.json, build config; remove them from .distignore) or link the public source repository in readme.txt == Build Instructions =="
+    fi
+    if ! readme_has '^==[[:space:]]*(build instructions|source code|development|developers)'; then
+        add_finding "WARNING" "G4-Source" "readme.txt" "0" "Compiled JS ships (e.g. ${BUILT_JS[0]}) but readme.txt has no == Build Instructions == section" "Add == Build Instructions == with the commands to rebuild the assets (e.g. npm install && npm run build) and where the source lives"
+    fi
+fi
+
+
+# ─── CHECK 14: Bundled libraries ───
+
+echo -e "\n=== Category 14: Bundled Libraries ===" >&2
+
+# Composer-installed code must ship with composer.json.
+if ships "vendor/*" && ! ships "composer.json"; then
+    add_finding "BLOCKER" "Library-Composer" "vendor/" "0" "vendor/ ships without composer.json, so reviewers cannot see how the bundled libraries are installed or updated" "Install bundled SDKs with Composer and ship composer.json (composer.lock may stay in .distignore)"
+fi
+
+APPSERO_CLIENT=""
+LC_SAVED="${LC_ALL:-}"
+for rel in "${SHIPPED[@]+"${SHIPPED[@]}"}"; do
+    base="${rel##*/}"
+    lower="${base,,}"
+    case "/$rel" in
+        */appsero/*Client.php)
+            [ -z "$APPSERO_CLIENT" ] && APPSERO_CLIENT="$rel"
+            case "/$rel" in
+                */vendor/*) ;;
+                *) add_finding "WARNING" "Library-Composer" "$rel" "0" "Appsero SDK copied into the plugin by hand instead of installed with Composer" "Require appsero/client with Composer and remove the manual copy" ;;
+            esac ;;
+    esac
+    # Libraries WordPress core already ships.
+    case "$lower" in
+        jquery.js|jquery.min.js|jquery-[0-9]*.js|jquery-ui.js|jquery-ui.min.js|jquery-ui-[0-9]*.js|jquery-migrate*.js|backbone.js|backbone-min.js|backbone.min.js|underscore.js|underscore-min.js|underscore.min.js|moment.js|moment.min.js|react.development.js|react.production.min.js|react-dom.*.js|lodash.js|lodash.min.js|class-phpmailer.php|phpmailer.php|class-simplepie.php|simplepie.php)
+            add_finding "BLOCKER" "Library-Core" "$rel" "0" "Bundles a library WordPress core already ships ($base)" "Remove it and depend on the core script handle (jquery, jquery-ui-*, backbone, underscore, moment, react / wp-element, lodash) or core class instead" ;;
+    esac
+done
+
+# Appsero SDK version (an outdated Appsero client was flagged in all 9 WPPOOL closures).
+# Committed SDK: read Client.php. Composer-installed at release: read composer.lock.
+APPSERO_VERSION=""
+APPSERO_WHERE=""
+if [ -n "$APPSERO_CLIENT" ]; then
+    APPSERO_VERSION=$(awk -F"'" '/\$version[[:space:]]*=/ { print $2; exit }' "$PLUGIN_DIR/$APPSERO_CLIENT" 2>/dev/null || true)
+    APPSERO_WHERE="$APPSERO_CLIENT"
+elif [ -f "$PLUGIN_DIR/composer.lock" ]; then
+    APPSERO_VERSION=$(awk '/"name"[[:space:]]*:[[:space:]]*"appsero\/client"/ { found = 1 } found && /"version"/ { gsub(/[^0-9.]/, ""); print; exit }' "$PLUGIN_DIR/composer.lock" 2>/dev/null || true)
+    APPSERO_WHERE="composer.lock"
+fi
+if [ -n "$APPSERO_VERSION" ]; then
+    APPSERO_LATEST=$(curl -fsS --max-time 15 "https://repo.packagist.org/p2/appsero/client.json" 2>/dev/null \
+        | grep -oE '"version":"v?[0-9]+\.[0-9]+\.[0-9]+"' | sed -E 's/.*"v?([0-9.]+)"/\1/' | sort -V | awk 'END { print }' || true)
+    APPSERO_LATEST="${APPSERO_LATEST:-2.0.4}"
+    if [ -n "$APPSERO_VERSION" ] && [ "$APPSERO_VERSION" != "$APPSERO_LATEST" ] \
+        && [ "$(printf '%s\n%s\n' "$APPSERO_VERSION" "$APPSERO_LATEST" | sort -V | awk 'NR == 1')" = "$APPSERO_VERSION" ]; then
+        add_finding "BLOCKER" "Library-Outdated" "$APPSERO_WHERE" "0" "Appsero SDK $APPSERO_VERSION is outdated (latest is $APPSERO_LATEST); an outdated Appsero client was cited in every WPPOOL closure" "composer update appsero/client, then re-test the opt-in screen"
+    fi
+fi
+
+# Other Composer packages: outdated or abandoned according to Packagist.
+if [ -n "$PY" ] && [ -f "$PLUGIN_DIR/composer.lock" ]; then
+    while IFS='|' read -r pkg installed latest abandoned; do
+        [ -z "$pkg" ] && continue
+        if [ -n "$abandoned" ]; then
+            add_finding "WARNING" "Library-Abandoned" "vendor/$pkg" "0" "$pkg is marked abandoned on Packagist (replacement: $abandoned)" "Switch to the maintained replacement or remove the dependency"
+        fi
+        if [ -n "$latest" ] && [ "$installed" != "$latest" ]; then
+            add_finding "WARNING" "Library-Outdated" "vendor/$pkg" "0" "$pkg $installed is bundled; the latest stable release is $latest" "Run composer update $pkg and re-test"
+        fi
+    done < <("$PY" - "$PLUGIN_DIR/composer.lock" 2>/dev/null <<'WPPOOL_PACKAGIST_PY' || true
+import json
+import re
+import sys
+import urllib.request
+
+
+def stable(version):
+    return re.fullmatch(r'v?\d+(\.\d+)*', version or '') is not None
+
+
+def key(version):
+    return [int(part) for part in version.lstrip('v').split('.')]
+
+
+lock = json.load(open(sys.argv[1], encoding='utf-8'))
+for pkg in lock.get('packages', []):
+    name = pkg.get('name', '')
+    installed = str(pkg.get('version', '')).lstrip('v')
+    if not name or name == 'appsero/client' or not stable(installed):
+        continue
+    try:
+        with urllib.request.urlopen('https://repo.packagist.org/p2/' + name + '.json', timeout=15) as resp:
+            versions = json.load(resp).get('packages', {}).get(name, [])
+    except Exception:
+        continue
+    stables = [v['version'] for v in versions if stable(v.get('version', ''))]
+    latest = max(stables, key=key).lstrip('v') if stables else ''
+    abandoned = versions[0].get('abandoned') if versions else None
+    if abandoned is True:
+        abandoned = 'none suggested'
+    print('|'.join([name, installed, latest, abandoned or '']))
+WPPOOL_PACKAGIST_PY
+)
+fi
+
+
+# ─── CHECK 15: WP.org code rules ───
+
+echo -e "\n=== Category 15: WP.org Code Rules ===" >&2
+
+# Loading WordPress core files directly.
+while IFS=: read -r file line content; do
+    skip_path "$file" && continue
+    is_comment "$content" && continue
+    add_finding "BLOCKER" "Core-Loading" "$file" "$line" "Loads a WordPress core loading file directly: $(echo "$content" | head -c 120)" "Run inside WordPress instead (admin-ajax.php, the REST API or admin-post.php hooks)"
+done < <(grep -rnIE "(require|include)(_once)?[^;]*(wp-(load|config|blog-header|settings)\.php|wp-admin/admin\.php)" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+
+# HEREDOC / NOWDOC.
+while IFS=: read -r file line content; do
+    skip_path "$file" && continue
+    is_comment "$content" && continue
+    add_finding "BLOCKER" "HEREDOC" "$file" "$line" "HEREDOC/NOWDOC syntax (WP.org asks for it to be removed): $(echo "$content" | head -c 100)" "Use normal strings, or close PHP and write the HTML with escaped echo statements"
+done < <(grep -rnIE "<<<[[:space:]]*['\"]?[A-Za-z_]" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+
+# ob_start() without a matching close.
+while IFS= read -r file; do
+    skip_path "$file" && continue
+    opens=$(grep -cE '(^|[^A-Za-z0-9_])ob_start[[:space:]]*\(' "$file" || true)
+    closes=$(grep -cE '(^|[^A-Za-z0-9_])ob_(get_clean|end_clean|end_flush|get_flush)[[:space:]]*\(' "$file" || true)
+    if [ "${opens:-0}" -gt "${closes:-0}" ]; then
+        first=$(grep -nE '(^|[^A-Za-z0-9_])ob_start[[:space:]]*\(' "$file" | awk -F: 'NR == 1 { print $1 }' || true)
+        add_finding "WARNING" "Output-Buffer" "$file" "${first:-0}" "ob_start() is called ${opens} time(s) but buffers are closed only ${closes} time(s) in this file" "Close every buffer with ob_get_clean() / ob_end_clean() on every path, including early returns"
+    fi
+done < <(grep -rlE '(^|[^A-Za-z0-9_])ob_start[[:space:]]*\(' "$PLUGIN_DIR" --include="*.php" 2>/dev/null || true)
+
+# Changing global PHP settings.
+while IFS=: read -r file line content; do
+    skip_path "$file" && continue
+    is_comment "$content" && continue
+    severity="WARNING"
+    [[ "$content" == *date_default_timezone_set* ]] && severity="BLOCKER"
+    add_finding "$severity" "Server-Config" "$file" "$line" "Changes a global PHP setting for the whole site: $(echo "$content" | head -c 100)" "Remove it; use wp_date()/current_time() for time zones and let the site owner manage PHP limits"
+done < <(grep -rnIE '(^|[^A-Za-z0-9_>:$])(ini_set|error_reporting|date_default_timezone_set|set_time_limit)[[:space:]]*\(' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+
+# Hardcoded wp-content / wp-json paths.
+while IFS=: read -r file line content; do
+    case "$file" in *.min.js|*/build/*|*/dist/*) continue ;; esac
+    skip_path "$file" && continue
+    is_comment "$content" && continue
+    add_finding "WARNING" "Hardcoded-Path" "$file" "$line" "Hardcoded WordPress path/URL: $(echo "$content" | head -c 100)" "Use plugin_dir_path(), plugins_url(), content_url(), wp_upload_dir() or rest_url() (wp.apiFetch / wpApiSettings.root in JS)"
+done < <(grep -rnIE "['\"/]wp-content/(plugins|themes|uploads)|['\"]/?wp-json/" "$PLUGIN_DIR" --include="*.php" --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" --include="*.vue" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+
+# Writing into the plugin/theme/core folders or generating PHP files.
+while IFS=: read -r file line content; do
+    skip_path "$file" && continue
+    is_comment "$content" && continue
+    if echo "$content" | grep -qE "index\.php['\"]"; then
+        continue  # "Silence is golden" index.php guards in upload folders are fine.
+    elif echo "$content" | grep -qE "\.php['\"]"; then
+        add_finding "BLOCKER" "File-Write" "$file" "$line" "Writes a PHP file: $(echo "$content" | head -c 100)" "Never generate PHP files; store data in the database or under wp_upload_dir()"
+    elif echo "$content" | grep -qE '__DIR__|__FILE__|plugin_dir_path|WP_PLUGIN_DIR|WP_CONTENT_DIR|ABSPATH|get_template_directory|get_stylesheet_directory|_PLUGIN_(DIR|PATH)|_DIR[^A-Za-z]|_PATH[^A-Za-z]'; then
+        add_finding "WARNING" "File-Write" "$file" "$line" "Possibly writes into the plugin/theme/core folder: $(echo "$content" | head -c 100)" "Write files under wp_upload_dir() (or keep the data in the database); plugin folders are replaced on update"
+    fi
+done < <(grep -rnIE '(^|[^A-Za-z0-9_>:$])(file_put_contents|fopen|copy|rename|move_uploaded_file|mkdir|wp_mkdir_p)[[:space:]]*\(' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ | grep -vE "fopen[[:space:]]*\([[:space:]]*['\"]php://" || true)
+
+# Installing or activating other plugins.
+while IFS=: read -r file line content; do
+    skip_path "$file" && continue
+    is_comment "$content" && continue
+    add_finding "WARNING" "Plugin-Install" "$file" "$line" "Installs or activates another plugin: $(echo "$content" | head -c 100)" "Only allowed as a direct user action (button click) with nonce + capability checks; prefer the Requires Plugins header or a link to the core plugin installer"
+done < <(grep -rnIE '(^|[^A-Za-z0-9_>:$])(activate_plugins?)[[:space:]]*\(|new[[:space:]]+(\\)?Plugin_Upgrader|(^|[^A-Za-z0-9_>:$])plugins_api[[:space:]]*\(' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+
+# Free code that detects Pro (class_exists / defined / function_exists / is_plugin_active).
+while IFS=: read -r file line content; do
+    skip_path "$file" && continue
+    is_comment "$content" && continue
+    add_finding "WARNING" "G5-Pro-Gate" "$file" "$line" "Free code checks whether Pro is installed: $(echo "$content" | head -c 120). If this changes what the free plugin does, it is trialware (G5)" "Keep free behaviour identical with or without Pro; expose apply_filters()/do_action() hooks that Pro attaches to"
+done < <(grep -rnIE "(class_exists|defined|function_exists|is_plugin_active)[[:space:]]*\([[:space:]]*['\"][^'\"]*(PRO(_|['\"])|Pro([A-Z_\\\\]|['\"])|[-_]pro([-_/.]|['\"])|[Pp]remium|PREMIUM)" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+
+# Review links filtered to 5 stars.
+while IFS=: read -r file line content; do
+    skip_path "$file" && continue
+    add_finding "BLOCKER" "Review-Manipulation" "$file" "$line" "Review link filtered to 5-star reviews: $(echo "$content" | head -c 100)" "Link to the plain reviews page (wordpress.org/support/plugin/<slug>/reviews/#new-post)"
+done < <(grep -rnIE 'reviews/?\?filter=5' "$PLUGIN_DIR" --include="*.php" --include="*.js" --include="*.jsx" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+
+
+# ─── CHECK 16: Internationalization and file names ───
+
+echo -e "\n=== Category 16: i18n & File Names ===" >&2
+
+STR_RE="('([^'\\\\]|\\\\.)*'|\"([^\"\\\\]|\\\\.)*\")"
+I18N_SIMPLE="(^|[^A-Za-z0-9_>:$])(__|_e|esc_html__|esc_html_e|esc_attr__|esc_attr_e)[[:space:]]*\\([[:space:]]*${STR_RE}[[:space:]]*(,[[:space:]]*[^),]+)?\\)"
+I18N_CONTEXT="(^|[^A-Za-z0-9_>:$])(_x|_ex|esc_html_x|esc_attr_x)[[:space:]]*\\([[:space:]]*${STR_RE}[[:space:]]*,[[:space:]]*${STR_RE}[[:space:]]*(,[[:space:]]*[^),]+)?\\)"
+I18N_NONLITERAL="(^|[^A-Za-z0-9_>:$])(__|_e|_x|_ex|_n|esc_html__|esc_html_e|esc_attr__|esc_attr_e|esc_html_x|esc_attr_x)[[:space:]]*\\([[:space:]]*\\$"
+
+if [ -n "$TEXT_DOMAIN" ]; then
+    while IFS=: read -r file line content; do
+        case "$file" in *.min.js|*/build/*|*/dist/*) continue ;; esac
+        skip_path "$file" && continue
+        is_comment "$content" && continue
+        if [[ "$file" == *.php ]] && grep -qE "$I18N_NONLITERAL" <<< "$content"; then
+            add_finding "BLOCKER" "i18n" "$file" "$line" "Translation function called with a variable instead of a literal string: $(echo "$content" | head -c 100)" "Pass the literal text to __()/_e()/esc_html__() so it can be extracted for translation"
+        fi
+        while IFS= read -r call; do
+            [ -z "$call" ] && continue
+            # The domain is the argument after the string (two strings for the _x family).
+            stripped=$(sed -E "s/${STR_RE}/S/g" <<< "$call")
+            commas=$(tr -cd ',' <<< "$stripped" | wc -c)
+            needed=1
+            [[ "$call" == _x* || "$call" == _ex* || "$call" == esc_html_x* || "$call" == esc_attr_x* ]] && needed=2
+            if [ "$((commas))" -lt "$needed" ]; then
+                [[ "$file" == *.php ]] && add_finding "BLOCKER" "i18n" "$file" "$line" "Translation call without a text domain: $(echo "$call" | head -c 100)" "Add '$TEXT_DOMAIN' as the text domain argument"
+                continue
+            fi
+            domain=$(sed -E 's/.*,[[:space:]]*([^),]+)[[:space:]]*\)$/\1/; s/[[:space:]]+$//' <<< "$call")
+            case "$domain" in
+                "'$TEXT_DOMAIN'"|"\"$TEXT_DOMAIN\"") ;;
+                \'*\'|\"*\")
+                    add_finding "BLOCKER" "i18n" "$file" "$line" "Wrong text domain $domain (plugin slug is '$TEXT_DOMAIN'): $(echo "$call" | head -c 100)" "Use '$TEXT_DOMAIN' as the text domain" ;;
+                *)
+                    add_finding "BLOCKER" "i18n" "$file" "$line" "Text domain is a variable or constant ($domain), so translation tools cannot read it" "Use the literal string '$TEXT_DOMAIN'" ;;
+            esac
+        done < <(grep -oE "$I18N_SIMPLE|$I18N_CONTEXT" <<< "$content" | sed -E 's/^[^A-Za-z_]//' || true)
+    done < <(grep -rnIE '(^|[^A-Za-z0-9_>:$])(__|_e|_x|_ex|_n|esc_html__|esc_html_e|esc_attr__|esc_attr_e|esc_html_x|esc_attr_x)[[:space:]]*\(' "$PLUGIN_DIR" --include="*.php" --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+fi
+
+# File names that break SVN or case-insensitive / Windows file systems.
+LC_ALL=C
+UNSAFE_NAME_RE='[^-A-Za-z0-9._/+~]'
+for rel in "${SHIPPED[@]+"${SHIPPED[@]}"}"; do
+    case "$rel" in *" "*) continue ;; esac  # Spaces are reported in Category 6.
+    if [[ "$rel" =~ $UNSAFE_NAME_RE ]]; then
+        add_finding "BLOCKER" "File-Name" "$rel" "0" "File name contains characters that break SVN or some file systems (only letters, digits, . _ - + ~ are safe)" "Rename the file"
+    fi
+done
+while IFS= read -r dup; do
+    [ -z "$dup" ] && continue
+    add_finding "BLOCKER" "File-Name" "$dup" "0" "Two shipped files differ only by letter case ($dup); one overwrites the other on Windows/macOS" "Rename or remove one of them"
+done < <(printf '%s\n' "${SHIPPED[@]+"${SHIPPED[@]}"}" | tr 'A-Z' 'a-z' | sort | uniq -d || true)
+LC_ALL="$LC_SAVED"
+[ -z "$LC_ALL" ] && unset LC_ALL
+
+
+# ─── CHECK 17: Every external host is documented ───
+
+echo -e "\n=== Category 17: External Services Disclosure (G6/G7) ===" >&2
+
+CALL_RE='wp_remote_|wp_safe_remote_|download_url|fetch[[:space:]]*\(|axios|XMLHttpRequest|\$\.(get|post|ajax|getJSON)|<script|<iframe|wp_enqueue_|wp_register_|sendBeacon|WebSocket|file_get_contents|curl_init|curl_setopt|api_url|API_URL|_endpoint|_ENDPOINT|apiUrl|endpoint:'
+IGNORE_HOSTS_RE='(^|\.)(wordpress\.org|w\.org|w3\.org|schema\.org|example\.(com|org|net)|localhost|php\.net|mozilla\.org|github\.com|githubusercontent\.com|reactjs\.org|react\.dev|jquery\.com|opensource\.org|gnu\.org|json-schema\.org)$'
+KNOWN_SERVICES_RE='icanhazip\.com|ipify\.org|ipinfo\.io|ip-api\.com|headwayapp\.co|appsero\.com|google-analytics\.com|googletagmanager\.com|hotjar\.com|mixpanel\.com|segment\.(io|com)|sentry\.io|intercom\.io|crisp\.chat|tawk\.to|clarity\.ms'
+declare -A HOST_SEEN=()
+
+report_host() {
+    local host="$1" file="$2" line="$3" base
+    [ -n "${HOST_SEEN[$host]:-}" ] && return 0
+    HOST_SEEN[$host]=1
+    grep -qE "$IGNORE_HOSTS_RE" <<< "$host" && return 0
+    base=$(awk -F. '{ print (NF > 1 ? $(NF-1) "." $NF : $0) }' <<< "$host")
+    readme_has "${base//./\\.}" && return 0
+    add_finding "BLOCKER" "G6-External-Services" "$file" "$line" "Code contacts $host but readme.txt does not document it" "Add $host to readme.txt == External services ==: what it is used for, what data is sent and when, with links to its terms of service and privacy policy"
+}
+
+while IFS=: read -r file line content; do
+    rel="${file#"$PLUGIN_DIR"/}"
+    rel="${rel#./}"
+    distignored "$rel" && continue
+    # Well-known trackers and IP lookups: anywhere, including vendor/ and minified files.
+    while IFS= read -r host; do
+        [ -n "$host" ] && report_host "$host" "$rel" "$line"
+    done < <(grep -oiE "https?://[A-Za-z0-9.-]*($KNOWN_SERVICES_RE)" <<< "$content" | sed -E 's#^https?://##' | tr 'A-Z' 'a-z' || true)
+    # Other hosts: only on lines that make a remote call, and not in minified code.
+    [ "${#content}" -gt 1000 ] && continue
+    case "$rel" in *.min.js) continue ;; esac
+    grep -qE "$CALL_RE" <<< "$content" || continue
+    while IFS= read -r host; do
+        [ -n "$host" ] && report_host "$host" "$rel" "$line"
+    done < <(grep -oE 'https?://[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+' <<< "$content" | sed -E 's#^https?://##' | tr 'A-Z' 'a-z' || true)
+done < <(grep -rnIE 'https?://[A-Za-z0-9-]+\.[A-Za-z]' "$PLUGIN_DIR" --include="*.php" --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" --include="*.vue" 2>/dev/null | grep -v node_modules/ || true)
 
 
 # ─── REPORT SUMMARY ───

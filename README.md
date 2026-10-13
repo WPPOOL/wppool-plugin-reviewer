@@ -243,8 +243,8 @@ Automatically block PRs that violate WP.org rules + security standards.
 
 ```bash
 mkdir -p .github/workflows
-# Copy from your local clone of this repo (it is private, so a plain curl needs auth)
-cp /path/to/wppool-plugin-reviewer/templates/pr-check.yml .github/workflows/wporg-compliance.yml
+curl -fsSL https://raw.githubusercontent.com/WPPOOL/wppool-plugin-reviewer/master/templates/pr-check.yml \
+  -o .github/workflows/wporg-compliance.yml
 ```
 
 2. Edit `.github/workflows/wporg-compliance.yml` and change `plugin-text-domain` to your plugin slug
@@ -257,7 +257,11 @@ No tokens, secrets or deploy keys are needed. The workflow scans every commit pu
 
 ### AI Review (every commit)
 
-With a `GEMINI_API_KEY` (or `ANTHROPIC_API_KEY`) repo or org secret, every commit and PR also gets an AI review: the changed files are sent with the rules in `action/ai-review-rules.md` (built from the WP.org closures, the official guidelines and the security skill) to Gemini (`gemini-flash-lite-latest` by default, which works on the free tier; set `gemini-model` for a stronger model once billing is enabled) or Claude (`claude-opus-5-5`, preferred when its key is set). Findings appear in the run Summary and the PR comment; AI blockers fail the Compliance Gate (`fail-on-ai-blockers: false` to report only). If the AI provider is down, the run shows a warning instead of blocking. Only the AI keys are passed to the workflow; other repo secrets are not.
+With a `GEMINI_API_KEY` (or `ANTHROPIC_API_KEY`) repo or org secret, every commit and PR also gets an AI review: the changed files, plus `readme.txt` and the main plugin file for context, are sent with the rules in `action/ai-review-rules.md` and the skill's knowledge files (closure case studies, compliant free/pro pattern, official guidelines + Plugin Check, grep patterns) to Gemini (`gemini-flash-lite-latest` by default, which works on the free tier; set `gemini-model` for a stronger model once billing is enabled) or Claude (`claude-opus-5-5`, preferred when its key is set). Findings appear in the run Summary and the PR comment; AI blockers fail the Compliance Gate (`fail-on-ai-blockers: false` to report only). If the AI provider is down, the run shows a warning instead of blocking. Only the AI keys are passed to the workflow; other repo secrets are not.
+
+### Full-Plugin AI Audit (weekly + on demand)
+
+A commit review only sees what the commit changed. To also catch problems in code nobody touched, the template runs a **full audit** every Monday (03:00 UTC, default branch) and whenever you start it by hand: Actions → WP.org Compliance → Run workflow → tick **full audit**. Every shipped code file is reviewed in batches (about 6 requests for a 150-file plugin, paced for the Gemini free tier). The pattern checks below always scan the whole plugin.
 
 ### What It Checks on Every PR
 
@@ -283,6 +287,24 @@ With a `GEMINI_API_KEY` (or `ANTHROPIC_API_KEY`) repo or org secret, every commi
 | 18 | register_setting without sanitize_callback | Grep | Yes |
 | 19 | Unescaped output (echo $var) | Grep | Warning |
 | 20 | Tracking without opt-in | Grep | Warning |
+| 21 | Compiled/minified JS without shipped source or public repo link; missing Build Instructions | Repo scan | Yes / Warning |
+| 22 | `vendor/` without `composer.json`; hand-copied Appsero SDK | Repo scan | Yes / Warning |
+| 23 | Outdated Appsero SDK (latest looked up on Packagist; checks `Client.php` or `composer.lock`) | Repo scan | Yes |
+| 24 | Outdated or abandoned Composer packages (Packagist) | Repo scan | Warning |
+| 25 | Bundled copies of core libraries (jQuery, jQuery UI, Backbone, Underscore, Moment, React, Lodash, PHPMailer, SimplePie) | Repo scan | Yes |
+| 26 | Loading core files directly (`wp-load.php`, `wp-config.php`, ...) | Grep | Yes |
+| 27 | HEREDOC / NOWDOC | Grep | Yes |
+| 28 | `ob_start()` without matching close | Grep | Warning |
+| 29 | `date_default_timezone_set` (block), `ini_set` / `error_reporting` / `set_time_limit` (warn) | Grep | Yes / Warning |
+| 30 | Hardcoded `wp-content` / `wp-json` paths | Grep | Warning |
+| 31 | Generating PHP files (block); writing into plugin/theme folders (warn) | Grep | Yes / Warning |
+| 32 | Installing or activating other plugins | Grep | Warning |
+| 33 | Free code detecting Pro (`class_exists` / `defined` / `function_exists` / `is_plugin_active`) | Grep | Warning |
+| 34 | Review links filtered to 5 stars | Grep | Yes |
+| 35 | Wrong, missing, variable or constant text domain; variable strings in `__()` | Grep | Yes |
+| 36 | File names that break SVN or case-insensitive file systems | Repo scan | Yes |
+| 37 | Every external host the code contacts (and known trackers / IP lookups anywhere, incl. `vendor/`) is named in readme.txt | Grep | Yes |
+| 38 | AI review (judgement: trialware intent, serviceware, opt-in flow, security logic) | AI | Yes |
 
 ### PR Comment Format
 
@@ -313,6 +335,10 @@ Bot posts detailed comment on every PR:
 | `php-version` | `8.0` | PHP version for PHPCS |
 | `plugin-text-domain` | `''` | Plugin slug for prefix checks |
 | `fail-on-warnings` | `false` | Also block PR on warnings |
+| `ai-review` | `true` | Run the AI review (needs an AI key secret) |
+| `full-audit` | `false` | AI-review every shipped file (scheduled runs always do) |
+| `fail-on-ai-blockers` | `true` | AI blockers fail the Compliance Gate |
+| `gemini-model` / `claude-model` | `''` | Override the AI model |
 
 ### Adding to All WPPOOL Plugins
 
@@ -358,7 +384,7 @@ To add new closure patterns or detection rules:
 
 1. Add grep patterns to `knowledge/grep-patterns.md`
 2. Add detection to `action/check-wporg-compliance.sh`
-3. Run `python action/embed-checker.py` to copy the script into the reusable workflow (calling repos cannot read this private repo, so the workflow carries its own copy)
+3. Run `python action/embed-checker.py` to copy the scripts, AI rules and knowledge files into the reusable workflow (the workflow carries its own copy, so calling repos need no access to this repo's files)
 4. Update relevant category in `SKILL.md`
 5. Test against known-good and known-bad plugin
 
@@ -372,8 +398,10 @@ wppool-plugin-reviewer/
 │   └── workflows/
 │       └── wporg-compliance.yml     # Reusable workflow (called by plugin repos)
 ├── action/
-│   ├── check-wporg-compliance.sh    # Main checking script (12 categories)
-│   └── embed-checker.py             # Copies the script into the reusable workflow
+│   ├── check-wporg-compliance.sh    # Pattern + repo checks (17 categories)
+│   ├── ai-review.py                 # AI review (commit or full audit)
+│   ├── ai-review-rules.md           # AI reviewer rules (knowledge/ is appended)
+│   └── embed-checker.py             # Copies action/ + knowledge/ into the reusable workflow
 ├── templates/
 │   └── pr-check.yml                 # Template for plugin repos to copy
 ├── knowledge/

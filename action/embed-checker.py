@@ -23,6 +23,11 @@ EMBEDS = [
     (ROOT / "action" / "check-wporg-compliance.sh", "WPPOOL_CHECKER_EOF"),
     (ROOT / "action" / "ai-review.py", "WPPOOL_AI_REVIEW_EOF"),
     (ROOT / "action" / "ai-review-rules.md", "WPPOOL_AI_RULES_EOF"),
+    # Skill knowledge the AI review appends to its rules.
+    (ROOT / "knowledge" / "closure-case-studies.md", "WPPOOL_KNOWLEDGE_EOF"),
+    (ROOT / "knowledge" / "compliant-trialware-pattern.md", "WPPOOL_KNOWLEDGE_EOF"),
+    (ROOT / "knowledge" / "official-guidelines-and-pcp.md", "WPPOOL_KNOWLEDGE_EOF"),
+    (ROOT / "knowledge" / "grep-patterns.md", "WPPOOL_KNOWLEDGE_EOF"),
 ]
 
 

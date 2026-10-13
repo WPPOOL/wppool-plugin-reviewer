@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""AI review of the plugin code changed by a commit or pull request.
+"""AI review of the plugin code changed by a commit or pull request, or of the whole plugin.
 
-Sends the diff (plus the full changed files for context) and the WPPOOL review rules to
-Claude (if ANTHROPIC_API_KEY is set) or Gemini (if GEMINI_API_KEY is set) and writes:
+Sends the diff (plus the full changed files, readme.txt and the main plugin file for context),
+the WPPOOL review rules and the reviewer skill's knowledge files to Claude (if
+ANTHROPIC_API_KEY is set) or Gemini (if GEMINI_API_KEY is set) and writes:
 
   ai-findings.json   structured findings
   ai-report.md       Markdown report (run summary + PR comment)
@@ -10,6 +11,8 @@ Claude (if ANTHROPIC_API_KEY is set) or Gemini (if GEMINI_API_KEY is set) and wr
 
 An API failure is reported as ai_status=error and never fails the job by itself, so a
 provider outage cannot block merges. Real findings are judged by the Compliance Gate.
+
+AUDIT_MODE=full reviews every shipped code file instead of the change, in batches.
 """
 
 import fnmatch
@@ -34,11 +37,22 @@ GEMINI_KEY = os.environ.get('GEMINI_API_KEY', '')
 ANTHROPIC_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', '') or 'gemini-flash-lite-latest'
 CLAUDE_MODEL = os.environ.get('CLAUDE_MODEL', '') or 'claude-opus-5-5'
+FULL_AUDIT = os.environ.get('AUDIT_MODE', '').lower() == 'full'
+
+# Reference material from the wppool-plugin-reviewer skill, appended to the rules.
+KNOWLEDGE_FILES = (
+    'closure-case-studies.md',
+    'compliant-trialware-pattern.md',
+    'official-guidelines-and-pcp.md',
+    'grep-patterns.md',
+)
 
 CODE_EXTENSIONS = ('.php', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.vue')
 ALWAYS_SKIP = ('vendor/', 'node_modules/', '.git/', '.github/', 'build/', 'dist/')
 MAX_FILE_CHARS = 60000
 MAX_TOTAL_CHARS = 350000
+MAX_CONTEXT_CHARS = 40000
+BATCH_PAUSE_SECONDS = 45  # Keeps full audits under the Gemini free-tier tokens-per-minute limit.
 
 FINDINGS_SCHEMA = {
     'type': 'object',
@@ -155,11 +169,7 @@ def collect_changes():
     parts, total, truncated = [], 0, []
     for name in files:
         diff = git('diff', '--unified=8', base, head, '--', name) if base else ''
-        try:
-            content = open(name, encoding='utf-8', errors='replace').read()
-        except OSError:
-            content = ''
-        numbered = '\n'.join(f'{i + 1:5d}| {line}' for i, line in enumerate(content.splitlines()))
+        numbered = numbered_lines(name)
         if len(numbered) > MAX_FILE_CHARS:
             numbered = numbered[:MAX_FILE_CHARS] + '\n... (file truncated for length)'
         block = f'### FILE: {name}\n\n#### Diff\n```diff\n{diff or "(new file / no diff available)"}\n```\n\n#### Full file (new version, with line numbers)\n```\n{numbered}\n```\n'
@@ -171,19 +181,122 @@ def collect_changes():
     return files, parts, truncated, label
 
 
-def build_prompt(parts, truncated, label):
-    lines = [
-        f'Review the following WordPress plugin changes ({label}).',
+def plugin_prefix():
+    prefix = os.path.normpath(PLUGIN_DIR).replace('\\', '/')
+    return '' if prefix in ('.', '') else prefix.rstrip('/') + '/'
+
+
+def numbered_lines(name):
+    try:
+        content = open(name, encoding='utf-8', errors='replace').read()
+    except OSError:
+        content = ''
+    return '\n'.join(f'{i + 1:5d}| {line}' for i, line in enumerate(content.splitlines()))
+
+
+def main_plugin_file():
+    prefix = plugin_prefix()
+    root = prefix or '.'
+    for entry in sorted(os.listdir(root)):
+        path = os.path.join(root, entry)
+        if entry.endswith('.php') and os.path.isfile(path):
+            with open(path, encoding='utf-8', errors='replace') as fh:
+                if 'Plugin Name:' in fh.read(8192):
+                    return prefix + entry
+    return ''
+
+
+def context_blocks(skip):
+    """readme.txt and the main plugin file, so the AI can check documentation and headers."""
+    blocks = []
+    for name in (plugin_prefix() + 'readme.txt', main_plugin_file()):
+        if not name or name in skip or not os.path.isfile(name):
+            continue
+        numbered = numbered_lines(name)
+        if len(numbered) > MAX_CONTEXT_CHARS:
+            numbered = numbered[:MAX_CONTEXT_CHARS] + '\n... (truncated)'
+        blocks.append(f'### CONTEXT FILE (unchanged, for reference): {name}\n```\n{numbered}\n```\n')
+    return blocks
+
+
+def collect_audit():
+    """Every shipped code file, split into batches that fit one request."""
+    patterns = distignore_patterns()
+    prefix = plugin_prefix()
+    files = []
+    for name in git('ls-files').splitlines():
+        if prefix and not name.startswith(prefix):
+            continue
+        rel = name[len(prefix):]
+        if is_reviewable(rel, patterns) and os.path.isfile(name):
+            files.append(name)
+
+    batches, current, size = [], [], 0
+    for name in files:
+        chunks, chunk, chunk_size = [], [], 0
+        for line in numbered_lines(name).split('\n'):
+            if chunk and chunk_size + len(line) > MAX_FILE_CHARS:
+                chunks.append('\n'.join(chunk))
+                chunk, chunk_size = [], 0
+            chunk.append(line)
+            chunk_size += len(line) + 1
+        chunks.append('\n'.join(chunk))
+        for i, text in enumerate(chunks):
+            part = f' (part {i + 1} of {len(chunks)})' if len(chunks) > 1 else ''
+            block = f'### FILE: {name}{part}\n```\n{text}\n```\n'
+            if current and size + len(block) > MAX_TOTAL_CHARS:
+                batches.append(current)
+                current, size = [], 0
+            current.append(block)
+            size += len(block)
+    if current:
+        batches.append(current)
+    return files, batches
+
+
+def build_prompt(parts, truncated, label, context=(), batch=''):
+    if FULL_AUDIT:
+        lines = [
+            f'FULL PLUGIN AUDIT{batch}: there is no diff. Review ALL the code shown below as if it were about to',
+            'be submitted to WordPress.org; the "review only the changed code" rule does not apply.',
+        ]
+    else:
+        lines = [f'Review the following WordPress plugin changes ({label}).']
+    lines += [
         f'Plugin text domain / slug: {TEXT_DOMAIN or "(not provided)"}.',
         'Return JSON matching this shape: {"summary": string, "findings": [{"severity": "BLOCKER"|"WARNING", '
         '"category": string, "file": string, "line": integer, "message": string, "fix": string}]}.',
-        'Use the exact file paths shown after "FILE:". Report only real problems in the changed code.',
-        '',
+        'Use the exact file paths shown after "FILE:" and the line numbers shown in the listing.',
+        'CONTEXT FILEs are reference only (for example: is an external service documented in readme.txt?). '
+        'Report a missing readme disclosure at the code line that contacts the service.',
     ]
+    if not FULL_AUDIT:
+        lines.append('Report only real problems in the changed code.')
+    lines.append('')
     if truncated:
         lines.append('These changed files were too large to include and were not reviewed: ' + ', '.join(truncated))
         lines.append('')
-    return '\n'.join(lines) + '\n'.join(parts)
+    return '\n'.join(lines) + '\n'.join(list(context) + list(parts))
+
+
+def load_rules():
+    rules = open(RULES_FILE, encoding='utf-8').read()
+    here = os.path.dirname(os.path.abspath(__file__))
+    folders = [os.environ.get('KNOWLEDGE_DIR', ''), os.path.dirname(os.path.abspath(RULES_FILE)),
+               os.path.join(here, '..', 'knowledge')]
+    extra = []
+    for name in KNOWLEDGE_FILES:
+        for folder in folders:
+            path = os.path.join(folder, name) if folder else ''
+            if path and os.path.isfile(path):
+                extra.append(f'\n\n---\n\n# Reference: {name}\n\n' + open(path, encoding='utf-8').read())
+                break
+    if extra:
+        rules += ('\n\n## 6. Reference knowledge from the WPPOOL reviewer skill\n\n'
+                  'The documents below are the detailed sources behind the rules above: real closure emails, '
+                  'the compliant free/pro pattern, the official guidelines and Plugin Check rules. Use them to '
+                  'judge borderline cases; the rules above still decide what is a BLOCKER.' + ''.join(extra))
+    return rules
 
 
 def http_json(url, payload, headers, timeout=300):
@@ -305,7 +418,8 @@ def write_report(status, provider, summary, findings, files, truncated, label, n
         md.append(summary or 'No reviewable plugin code changed.')
     else:
         result = 'FAIL: fix the AI-reported blockers before merging' if blockers else 'PASS: no blockers found by the AI review'
-        md += [f'**Result: {result}**', '', f'Reviewed {len(files)} changed file(s) in the {label} with {provider}.', '']
+        scope = f'{len(files)} file(s) ({label})' if FULL_AUDIT else f'{len(files)} changed file(s) in the {label}'
+        md += [f'**Result: {result}**', '', f'Reviewed {scope} with {provider}.', '']
         if summary:
             md += [cell(summary, 1500), '']
         md += ['| Blockers | Warnings |', '|---|---|', f'| {len(blockers)} | {len(warnings)} |']
@@ -316,7 +430,8 @@ def write_report(status, provider, summary, findings, files, truncated, label, n
                     where = f"{f['file']}:{f['line']}" if f['line'] else f['file']
                     md.append(f"| {cell(f['category'], 40)} | `{cell(where, 120)}` | {cell(f['message'], 400)} | {cell(f['fix'], 300)} |")
         if truncated:
-            md += ['', 'Not reviewed (too large): ' + ', '.join(f'`{t}`' for t in truncated)]
+            why = 'the request for these files failed' if FULL_AUDIT else 'too large'
+            md += ['', f'Not reviewed ({why}): ' + ', '.join(f'`{t}`' for t in truncated)]
         md += ['', '_AI findings can be wrong. If a blocker is a false positive, explain it in the PR and ask a maintainer to override._']
     report = '\n'.join(md) + '\n'
     open('ai-report.md', 'w', encoding='utf-8').write(report)
@@ -329,21 +444,57 @@ def write_report(status, provider, summary, findings, files, truncated, label, n
     print(report)
 
 
+def review(rules, prompt):
+    if ANTHROPIC_KEY:
+        return review_with_claude(rules, prompt)
+    return review_with_gemini(rules, prompt)
+
+
+def run_audit(rules):
+    files, batches = collect_audit()
+    label = 'full plugin audit'
+    if not files:
+        write_report('ok', 'none', 'No reviewable plugin code found.', [], [], [], label)
+        return
+    context = context_blocks(set())
+    findings, summaries, failed, provider = [], [], [], ''
+    for i, batch in enumerate(batches):
+        if i and not ANTHROPIC_KEY:
+            time.sleep(BATCH_PAUSE_SECONDS)
+        names = sorted({b.split('\n', 1)[0].replace('### FILE: ', '').split(' (part ')[0] for b in batch})
+        print(f'Audit batch {i + 1}/{len(batches)}: {len(names)} file(s)')
+        tag = f' (batch {i + 1} of {len(batches)})' if len(batches) > 1 else ''
+        try:
+            result, provider = review(rules, build_prompt(batch, [], label, context, tag))
+        except Exception as err:  # noqa: BLE001 - keep going; report what could not be reviewed
+            print(f'Batch {i + 1} failed: {err}')
+            failed += [n for n in names if n not in failed]
+            continue
+        if isinstance(result.get('findings'), list):
+            findings += result['findings']
+        if result.get('summary'):
+            summaries.append(str(result['summary']))
+    if len(failed) == len(files):
+        write_report('error', '', '', [], files, [], label, 'every audit batch failed; see the job log')
+        return
+    write_report('ok', provider, ' '.join(summaries), clean(findings, files), files, failed, label)
+
+
 def main():
     if not GEMINI_KEY and not ANTHROPIC_KEY:
         write_report('skipped', '', '', [], [], [], '', 'No AI key configured (add a GEMINI_API_KEY or ANTHROPIC_API_KEY secret to enable the AI review).')
+        return
+    rules = load_rules()
+    if FULL_AUDIT:
+        run_audit(rules)
         return
     files, parts, truncated, label = collect_changes()
     if not files:
         write_report('ok', 'none', 'No reviewable plugin code changed in this commit.', [], [], [], label)
         return
-    rules = open(RULES_FILE, encoding='utf-8').read()
-    prompt = build_prompt(parts, truncated, label)
+    prompt = build_prompt(parts, truncated, label, context_blocks(set(files)))
     try:
-        if ANTHROPIC_KEY:
-            result, provider = review_with_claude(rules, prompt)
-        else:
-            result, provider = review_with_gemini(rules, prompt)
+        result, provider = review(rules, prompt)
     except Exception as err:  # noqa: BLE001 - any provider failure is reported, not fatal
         write_report('error', '', '', [], files, truncated, label, str(err))
         return
