@@ -185,42 +185,56 @@ def http_json(url, payload, headers, timeout=300):
         return json.loads(resp.read().decode('utf-8'))
 
 
-def pick_gemini_model():
-    """Fall back to the newest available Flash model if the configured one is missing."""
+def pick_gemini_model(lite=False):
+    """Newest available Flash model (or Flash-Lite) for when the configured one is missing or out of quota."""
     req = urllib.request.Request('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',
                                  headers={'x-goog-api-key': GEMINI_KEY})
     with urllib.request.urlopen(req, timeout=60) as resp:
         models = json.loads(resp.read().decode('utf-8')).get('models', [])
     usable = [m['name'].split('/', 1)[-1] for m in models
               if 'generateContent' in m.get('supportedGenerationMethods', [])
-              and 'flash' in m['name'] and not any(x in m['name'] for x in ('lite', 'tts', 'image', 'live', 'embedding', 'audio', 'exp', 'preview'))]
+              and 'flash' in m['name'] and (('lite' in m['name']) == lite)
+              and not any(x in m['name'] for x in ('tts', 'image', 'live', 'embedding', 'audio', 'exp', 'preview'))]
     return sorted(usable)[-1] if usable else None
 
 
 def review_with_gemini(rules, prompt):
     model = GEMINI_MODEL
+    tried_lite = False
     payload = {
         'systemInstruction': {'parts': [{'text': rules}]},
         'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
         'generationConfig': {'temperature': 0.1, 'responseMimeType': 'application/json'},
     }
-    for attempt in range(4):
+    for attempt in range(5):
         url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
         try:
             data = http_json(url, payload, {'x-goog-api-key': GEMINI_KEY})
             text = ''.join(p.get('text', '') for p in data['candidates'][0]['content']['parts'])
             return json.loads(text), f'gemini ({model})'
         except urllib.error.HTTPError as err:
+            body = err.read().decode('utf-8', 'replace')
+            print(f'Gemini API error {err.code} for {model}:')
+            print(body)
             if err.code == 404 and attempt == 0:
                 fallback = pick_gemini_model()
                 if fallback and fallback != model:
                     print(f'Gemini model {model} not available; using {fallback}.')
                     model = fallback
                     continue
+            if err.code == 429 and 'quota' in body.lower() and not tried_lite:
+                # Out of quota for this model (often: free tier has none): try Flash-Lite once.
+                tried_lite = True
+                lite = pick_gemini_model(lite=True)
+                if lite and lite != model:
+                    print(f'Out of quota for {model}; trying {lite}.')
+                    model = lite
+                    continue
             if err.code in (429, 500, 503) and attempt < 3:
                 time.sleep(15 * (attempt + 1))
                 continue
-            raise RuntimeError(f'Gemini API error {err.code}: {err.read().decode("utf-8", "replace")[:500]}')
+            first = json.loads(body).get('error', {}).get('message', body) if body.startswith('{') else body
+            raise RuntimeError(f'Gemini API error {err.code}: {first[:400]}')
     raise RuntimeError('Gemini API kept failing')
 
 
@@ -279,6 +293,8 @@ def write_report(status, provider, summary, findings, files, truncated, label, n
         md.append(f':warning: The AI review could not run: {cell(note, 400)}')
         md.append('')
         md.append('This does not block the merge; the pattern-based checks above still apply.')
+    elif not files:
+        md.append(summary or 'No reviewable plugin code changed.')
     else:
         result = 'FAIL: fix the AI-reported blockers before merging' if blockers else 'PASS: no blockers found by the AI review'
         md += [f'**Result: {result}**', '', f'Reviewed {len(files)} changed file(s) in the {label} with {provider}.', '']
