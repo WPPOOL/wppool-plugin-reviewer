@@ -14,12 +14,27 @@
 #   2. Update plugin-text-domain below to match your plugin slug
 #   3. (Optional) Add ANTHROPIC_API_KEY secret for AI-powered review
 #   4. Enable "Require status checks" in repo branch protection rules
-#      and add "Compliance Gate" as required check
+#      and add "compliance / Compliance Gate" as required check
 #
+# No tokens or deploy keys are needed: the checker is embedded in the
+# reusable workflow. This repo must allow access from WPPOOL repositories
+# (Settings > Actions > General > Access), which is already set.
 
 name: WP.org Compliance
 
 on:
+  workflow_dispatch:
+  push:
+    branches: [main, master, develop]
+    paths:
+      - '.github/workflows/wporg-compliance.yml'
+      - '**.php'
+      - '**.js'
+      - '**.jsx'
+      - '**.ts'
+      - '**.tsx'
+      - 'readme.txt'
+      - 'readme.md'
   pull_request:
     branches: [main, master, develop]
     paths:
@@ -31,9 +46,15 @@ on:
       - 'readme.txt'
       - 'readme.md'
 
+# The reusable workflow posts a PR comment and annotations.
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
 jobs:
   compliance:
-    uses: WPPOOL/wppool-plugin-reviewer/.github/workflows/wporg-compliance.yml@main
+    uses: WPPOOL/wppool-plugin-reviewer/.github/workflows/wporg-compliance.yml@master
     with:
       plugin-dir: '.'                    # Change if plugin is in subdirectory
       php-version: '8.0'                 # Match your plugin's minimum PHP

@@ -243,15 +243,17 @@ Automatically block PRs that violate WP.org rules + security standards.
 
 ```bash
 mkdir -p .github/workflows
-curl -o .github/workflows/wporg-compliance.yml \
-  https://raw.githubusercontent.com/WPPOOL/wppool-plugin-reviewer/main/templates/pr-check.yml
+# Copy from your local clone of this repo (it is private, so a plain curl needs auth)
+cp /path/to/wppool-plugin-reviewer/templates/pr-check.yml .github/workflows/wporg-compliance.yml
 ```
 
 2. Edit `.github/workflows/wporg-compliance.yml` and change `plugin-text-domain` to your plugin slug
 
 3. Commit and push
 
-4. (Recommended) In repo Settings → Branches → Branch protection rules, add "Compliance Gate" as required status check
+4. (Recommended) In repo Settings → Branches → Branch protection rules, add "compliance / Compliance Gate" as required status check
+
+No tokens, secrets or deploy keys are needed. The workflow runs on pushes to main/master/develop, on pull requests, and manually (Actions → WP.org Compliance → Run workflow). Reports: run → Summary → Artifacts (`compliance-report`, `phpcs-report`).
 
 ### What It Checks on Every PR
 
@@ -341,7 +343,7 @@ To make the check mandatory (block merge on failure):
 1. Go to repo → Settings → Branches
 2. Add/edit branch protection rule for `main`/`master`
 3. Check "Require status checks to pass before merging"
-4. Search and add "Compliance Gate"
+4. Search and add "compliance / Compliance Gate"
 5. Save changes
 
 Now PRs with WP.org violations cannot be merged.
@@ -352,8 +354,11 @@ To add new closure patterns or detection rules:
 
 1. Add grep patterns to `knowledge/grep-patterns.md`
 2. Add detection to `action/check-wporg-compliance.sh`
-3. Update relevant category in `SKILL.md`
-4. Test against known-good and known-bad plugin
+3. Run `python action/embed-checker.py` to copy the script into the reusable workflow (calling repos cannot read this private repo, so the workflow carries its own copy)
+4. Update relevant category in `SKILL.md`
+5. Test against known-good and known-bad plugin
+
+The checker skips `vendor/`, `node_modules/`, `.git/`, `.github/` and everything in the plugin's `.distignore`, since those files never ship to WP.org.
 
 ## File Structure
 
@@ -363,7 +368,8 @@ wppool-plugin-reviewer/
 │   └── workflows/
 │       └── wporg-compliance.yml     # Reusable workflow (called by plugin repos)
 ├── action/
-│   └── check-wporg-compliance.sh    # Main checking script (12 categories)
+│   ├── check-wporg-compliance.sh    # Main checking script (12 categories)
+│   └── embed-checker.py             # Copies the script into the reusable workflow
 ├── templates/
 │   └── pr-check.yml                 # Template for plugin repos to copy
 ├── knowledge/
