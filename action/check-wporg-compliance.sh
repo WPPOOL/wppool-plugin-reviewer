@@ -515,7 +515,12 @@ done
 # Committed SDK: read Client.php. Composer-installed at release: read composer.lock.
 APPSERO_VERSION=""
 APPSERO_WHERE=""
-if [ -n "$APPSERO_CLIENT" ]; then
+if [ -n "$APPSERO_CLIENT" ] && [ -f "$PLUGIN_DIR/vendor/composer/installed.json" ] && grep -q '"appsero/client"' "$PLUGIN_DIR/vendor/composer/installed.json"; then
+    # Composer's record is reliable; Appsero's Client.php $version string is not
+    # (v2.0.7 still says '2.0.4').
+    APPSERO_VERSION=$(awk '/"name"[[:space:]]*:[[:space:]]*"appsero\/client"/ { found = 1 } found && /"version"/ { gsub(/[^0-9.]/, ""); print; exit }' "$PLUGIN_DIR/vendor/composer/installed.json" 2>/dev/null || true)
+    APPSERO_WHERE="vendor/composer/installed.json"
+elif [ -n "$APPSERO_CLIENT" ]; then
     APPSERO_VERSION=$(awk -F"'" '/\$version[[:space:]]*=/ { print $2; exit }' "$PLUGIN_DIR/$APPSERO_CLIENT" 2>/dev/null || true)
     APPSERO_WHERE="$APPSERO_CLIENT"
 elif [ -f "$PLUGIN_DIR/composer.lock" ]; then
@@ -530,6 +535,12 @@ if [ -n "$APPSERO_VERSION" ]; then
         && [ "$(printf '%s\n%s\n' "$APPSERO_VERSION" "$APPSERO_LATEST" | sort -V | awk 'NR == 1')" = "$APPSERO_VERSION" ]; then
         add_finding "BLOCKER" "Library-Outdated" "$APPSERO_WHERE" "0" "Appsero SDK $APPSERO_VERSION is outdated (latest is $APPSERO_LATEST); an outdated Appsero client was cited in every WPPOOL closure" "composer update appsero/client, then re-test the opt-in screen"
     fi
+fi
+
+# Bundled Appsero must live in the plugin's own namespace, or it clashes with
+# every other plugin that bundles Appsero ("Cannot declare class Appsero\Client").
+if [ -n "$APPSERO_CLIENT" ] && grep -qE '^namespace[[:space:]]+Appsero;' "$PLUGIN_DIR/$APPSERO_CLIENT" 2>/dev/null; then
+    add_finding "BLOCKER" "Library-Prefix" "$APPSERO_CLIENT" "0" "Bundled Appsero SDK uses the shared 'Appsero' namespace, so it fatals next to any other plugin that bundles Appsero" "Prefix it into your plugin's namespace (e.g. a Composer post-install script, Strauss or PHP-Scoper) and autoload it from there"
 fi
 
 # Other Composer packages: outdated or abandoned according to Packagist.
