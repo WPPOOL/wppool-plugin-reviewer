@@ -426,7 +426,7 @@ To make the check mandatory (block merge on failure):
 2. Add/edit branch protection rule for `main`/`master`
 3. Check "Require status checks to pass before merging"
 4. Search and add "compliance / Compliance Gate"
-5. Save changes
+5. Save changes 
 
 Now PRs with WP.org violations cannot be merged.
 

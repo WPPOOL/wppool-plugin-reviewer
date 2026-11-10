@@ -36,7 +36,7 @@ on:
   schedule:
     - cron: '0 3 * * 1'   # full AI audit every Monday 03:00 UTC (runs on the default branch)
   push:
-    branches: [develop, main, master, compliance]   # compliance = branch for testing this check
+    branches: [develop, main, master, compliance]   # compliance = branch for testing this check so every push on compliance will run the check
   pull_request:
     branches: [main, master, develop, compliance]
     paths:
