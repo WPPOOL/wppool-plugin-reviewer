@@ -243,6 +243,11 @@ jobs:
               esac
           }
 
+          is_comment() {
+              local trimmed="${1#"${1%%[![:space:]]*}"}"
+              [[ "$trimmed" == //* || "$trimmed" == \** || "$trimmed" == /\** || "$trimmed" == \#* ]]
+          }
+
           # Paths that never ship to WP.org: dependency folders, VCS/CI folders and
           # everything listed in the plugin's .distignore (tests/, docs/, build tooling...).
           DISTIGNORE_PATTERNS=()
@@ -288,28 +293,114 @@ jobs:
 
           echo -e "\n=== Category 1: Trialware (Guideline 5) ===" >&2
 
-          # is_pro / is_premium gates in PHP (not in comments, not in wp_localize_script)
-          while IFS=: read -r file line content; do
-              # Skip vendor/node_modules
-              skip_path "$file" && continue
-              # Skip comment lines
-              trimmed=$(echo "$content" | sed 's/^[ \t]*//')
-              [[ "$trimmed" == //* || "$trimmed" == \** || "$trimmed" == \#* ]] && continue
-              # Skip wp_localize_script lines (allowed use)
-              [[ "$content" == *wp_localize_script* ]] && continue
-              # Skip class property definitions
-              [[ "$content" == *"private "* || "$content" == *"protected "* || "$content" == *"public "* ]] && [[ "$content" == *'$is_pro'* || "$content" == *'$is_premium'* || "$content" == *'$is_ultimate'* ]] && [[ "$content" != *"if"* && "$content" != *"return"* ]] && continue
+          # Guideline 5 forbids locking code that ships in the free plugin. It allows:
+          #   - a helper that only reports whether Pro is active (return function_exists(...) && license);
+          #   - passing that status to JS or templates (array values, assignments, CSS classes);
+          #   - branches that hand over to the Pro plugin's own code (if pro { pro() } else { free() })
+          #     or to hooks the Pro plugin fills (apply_filters / do_action).
+          # It blocks a license check that stops free code from running (if ! pro { return; }).
 
-              # Flag if used in conditional (if/ternary/return)
-              if echo "$content" | grep -qE '(if|return|&&|\|\||[\?:])\s*.*\b(is_pro|is_premium|is_ultimate|license_status|can_use_premium)\b'; then
-                  add_finding "BLOCKER" "G5-Trialware" "$file" "$line" "License check gates functionality: ${content:0:120}" "Remove gate; use apply_filters() with real default"
+          PRO_TOKENS='is_pro|is_premium|is_ultimate|license_status|can_use_premium'
+
+          # The Pro plugin's API: functions/classes the free code probes for with function_exists() /
+          # class_exists() but does not define itself, and whose name says pro/premium.
+          PRO_API=""
+          while IFS= read -r name; do
+              [ -z "$name" ] && continue
+              short="${name##*\\}"
+              grep -rqE "(function|class)[[:space:]]+${short}[[:space:]({]" "$PLUGIN_DIR" --include="*.php" --exclude-dir=vendor --exclude-dir=node_modules 2>/dev/null && continue
+              PRO_API="${PRO_API:+$PRO_API|}${short}"
+          done < <(grep -rhoE "(function_exists|class_exists)[[:space:]]*\([[:space:]]*['\"][A-Za-z0-9_\\\\]+['\"]" "$PLUGIN_DIR" --include="*.php" --exclude-dir=vendor --exclude-dir=node_modules 2>/dev/null \
+              | grep -oE "['\"][^'\"]+['\"]" | tr -d "'\"" | grep -iE 'pro|premium|ultimate' | sort -u || true)
+
+          # Helpers in the free code that return a Pro/license status (e.g. is_pro_active()):
+          # calls to them gate code just like the raw check does.
+          PRO_HELPERS=$(grep -rnE "\b($PRO_TOKENS)\b" "$PLUGIN_DIR" --include="*.php" --exclude-dir=vendor --exclude-dir=node_modules 2>/dev/null \
+              | grep -E ':[[:space:]]*return[[:space:]]' | cut -d: -f1,2 | while IFS=: read -r f l; do
+                  awk -v s="$l" 'NR > s { exit } match($0, /function[[:space:]]+[A-Za-z0-9_]+/) { n = substr($0, RSTART, RLENGTH); sub(/function[[:space:]]+/, "", n) } END { if (n != "") print n }' "$f" 2>/dev/null
+              done | grep -vE "^($PRO_TOKENS)$" | sort -u | paste -sd'|' - || true)
+          GATE_RE="\b($PRO_TOKENS)\b"
+          [ -n "$PRO_HELPERS" ] && GATE_RE="\b($PRO_TOKENS)\b|\b($PRO_HELPERS)[[:space:]]*\("
+
+          # Hand-over to Pro: a call into the Pro plugin's API, or a hook the Pro plugin fills.
+          HANDOVER_RE="(apply_filters|do_action)[[:space:]]*\("
+          [ -n "$PRO_API" ] && HANDOVER_RE="$HANDOVER_RE|\b($PRO_API)[[:space:]]*\(|new[[:space:]]+\\\\?($PRO_API)\b"
+
+          # Prints the statement starting at line $2 of file $1: through the matching closing brace,
+          # endif / endwhile for template syntax, or the first ';' for a one-line if. Max 80 lines.
+          statement_block() {
+              awk -v s="$2" '
+                  NR < s { next }
+                  NR > s + 80 { exit }
+                  {
+                      print
+                      l = $0
+                      gsub(/\047[^\047]*\047|"[^"]*"/, "", l)          # ignore braces inside strings
+                      sub(/\/\/.*$/, "", l)
+                      o = gsub(/\{/, "{", l); c = gsub(/\}/, "}", l)
+                      depth += o - c
+                      if (o > 0) opened = 1
+                      if (opened && depth <= 0) exit
+                      if (!opened && l ~ /^[[:space:]]*(<\?php[[:space:]]+)?(endif|endwhile|endforeach)/) exit
+                      if (!opened && l ~ /;[[:space:]]*(\?>)?[[:space:]]*$/ && l !~ /:[[:space:]]*(\?>)?[[:space:]]*$/) exit
+                  }' "$1" 2>/dev/null
+          }
+
+          while IFS=: read -r file line content; do
+              skip_path "$file" && continue
+              is_comment "$content" && continue
+              trimmed="${content#"${content%%[![:space:]]*}"}"
+              trimmed="${trimmed#<?php }"
+              trimmed="${trimmed#"${trimmed%%[![:space:]]*}"}"
+
+              if [[ "$trimmed" =~ ^(\}[[:space:]]*)?(else[[:space:]]*if|elseif|if|while)[[:space:]]*\( ]]; then
+                  block=$(statement_block "$file" "$line")
+                  # Hands the work to the Pro plugin (either branch): allowed.
+                  echo "$block" | grep -qE "$HANDOVER_RE" && continue
+                  # License check that stops free code from running: the classic lock.
+                  if echo "$block" | sed '1s/^[^)]*)//' | head -12 | grep -qE '(^|[^A-Za-z0-9_])(return|exit|die|wp_die|wp_send_json_error|continue|break)([^A-Za-z0-9_]|$)'; then
+                      add_finding "BLOCKER" "G5-Trialware" "$file" "$line" "License check stops free code from running: ${content:0:120}" "Ship the feature unlocked in free, or move it into the Pro plugin and call it from here (apply_filters / do_action / the Pro plugin's API)"
+                      continue
+                  fi
+                  # "if not Pro" without an early exit only adds something for free users (an
+                  # Upgrade menu, a notice): nothing is taken away.
+                  cond=$(echo "$content" | sed -E -e 's/!\s*empty\s*\(/HAS(/g' -e 's/(^|[^A-Za-z0-9_])empty\s*\(/\1! (/g')
+                  total=$(echo "$cond" | { grep -oE "$GATE_RE" || true; } | wc -l)
+                  negated=$(echo "$cond" | { grep -oE "!\s*[^&|!=;{]*($GATE_RE)" || true; } | wc -l)
+                  [ "$total" -gt 0 ] && [ "$negated" -ge "$total" ] && continue
+                  # Version / compatibility checks against the installed Pro plugin.
+                  echo "$content" | grep -qiE 'version|supports|compat' && continue
+                  add_finding "WARNING" "G5-Trialware" "$file" "$line" "Free code runs only when Pro/license is active: ${content:0:120}" "OK if this code is useless without Pro; if it is a feature, move it into the Pro plugin and call it from here"
+                  continue
               fi
-          done < <(grep -rnE '\b(is_pro|is_premium|is_ultimate|license_status|can_use_premium)\b' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+
+              # Ternary that picks the Pro plugin's object or a hook: a hand-over, allowed.
+              echo "$content" | grep -qE "$HANDOVER_RE" && continue
+
+              # Ternary picking a value from the license (e.g. a row limit): may cap a free feature.
+              # Status passed on as data (array values, echoed CSS classes, plain assignments) is fine.
+              if echo "$content" | grep -qE "($GATE_RE)[^?]*\?[^?:]+:" \
+                  && ! echo "$content" | grep -qE "=>|(^|[^A-Za-z_])(echo|print|printf|esc_attr|esc_html)[[:space:](]|class=|^[[:space:]]*return[[:space:]]"; then
+                  add_finding "WARNING" "G5-Trialware" "$file" "$line" "Value depends on license status: ${content:0:120}" "Free users must get a working value (no artificial limits on free code)"
+              fi
+          done < <(grep -rnE "$GATE_RE" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
           # apply_filters with bad defaults (null, false, [], '' used as lock)
+          # Core filters and defaults the caller checks for (?? / ?: / null === / empty()) are fine.
+          CORE_FILTERS='https_local_ssl_verify|https_ssl_verify|http_request_timeout|http_request_args|upload_mimes|wp_mail_from'
           while IFS=: read -r file line content; do
               skip_path "$file" && continue
-              if echo "$content" | grep -qE "apply_filters\s*\(\s*['\"][^'\"]+['\"]\s*,\s*(null|false|\[\]|''|\"\")\s*[,)]"; then
+              is_comment "$content" && continue
+              if echo "$content" | grep -qE "apply_filters\s*\(\s*['\"][^'\"]+['\"]\s*,\s*(null|false|\[\]|array\(\)|''|\"\")\s*[,)]"; then
+                  echo "$content" | grep -qE "apply_filters\s*\(\s*['\"]($CORE_FILTERS)['\"]" && continue
+                  echo "$content" | grep -qE "\)\s*(\?\?|\?:)" && continue
+                  var=$(echo "$content" | grep -oE '\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*apply_filters' | grep -oE '^\$[A-Za-z_][A-Za-z0-9_]*' || true)
+                  if [ -n "$var" ]; then
+                      v="${var#\$}"
+                      # Also fine: the value is only passed on as data (e.g. to wp_localize_script).
+                      sed -n "$((line + 1)),$((line + 10))p" "$file" 2>/dev/null \
+                          | grep -qE "=>\s*\\\$$v\s*,|(null|false)\s*[!=]==\s*\\\$$v\b|\\\$$v\s*[!=]==\s*(null|false)|(is_null|empty|is_array|is_string|is_callable|is_object|isset)\s*\(\s*\\\$$v\b|!\s*\\\$$v\b|\\\$$v\s*(\?\?|\?:)|if\s*\(\s*\\\$$v\s*\)|foreach\s*\(\s*\\\$$v\s" && continue
+                  fi
                   add_finding "WARNING" "G5-Trialware" "$file" "$line" "apply_filters() with potentially locking default (null/false/[]/empty): ${content:0:120}" "Use real working default value"
               fi
           done < <(grep -rnE "apply_filters\s*\(" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
@@ -341,10 +432,13 @@ jobs:
           done < <(grep -rnE "(wp_enqueue_script|wp_enqueue_style|wp_register_script|wp_register_style)" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep "http" | grep -v vendor/ | grep -v node_modules/ || true)
 
           # Tracking without opt-in check
+          # A variable named $usage_data (e.g. AI token counts kept on the site) is not tracking;
+          # sending it off-site is.
           while IFS=: read -r file line content; do
               skip_path "$file" && continue
+              is_comment "$content" && continue
               add_finding "WARNING" "G7-Tracking" "$file" "$line" "Telemetry/tracking call found; verify opt-in consent: ${content:0:120}" "Ensure tracking is opt-in, off by default"
-          done < <(grep -rnE "(send_tracking|track_usage|telemetry|analytics.*send|usage_data)" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+          done < <(grep -rnE "(send_tracking|track_usage|telemetry|analytics.*send|wp_remote_(post|request)\s*\(.*usage_data)" "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 
           # ─── CHECK 3: Security - Input/Output ───
@@ -358,9 +452,12 @@ jobs:
               [[ "$trimmed" == //* || "$trimmed" == \** ]] && continue
               # Skip if already wrapped in sanitize/wp_unslash
               echo "$content" | grep -qE "(sanitize_|wp_unslash|absint|intval|esc_)" && continue
-              # Existence checks (isset/empty) and strict comparisons only read the value.
+              # Existence/type checks (isset, empty, is_array...), unset() and strict comparisons
+              # (including "0 === stripos( $_SERVER[...], 'x' )") only test the value, never use it.
               remaining=$(echo "$content" | sed -E \
-                  -e 's/(isset|empty)\s*\(\s*\$_(POST|GET|REQUEST|SERVER)\[[^]]*\]\s*\)//g' \
+                  -e 's/(isset|empty|is_array|is_string|is_numeric|is_scalar|is_int|array_key_exists|unset)\s*\(\s*\$_(POST|GET|REQUEST|SERVER)\[[^]]*\]\s*\)//g' \
+                  -e 's/(stripos|strpos|str_starts_with|str_contains|str_ends_with|strcasecmp|strcmp)\s*\(\s*(\(string\)\s*)?\$_(POST|GET|REQUEST|SERVER)\[[^]]*\]\s*,[^)]*\)\s*[!=]==//g' \
+                  -e 's/[!=]==\s*(stripos|strpos|str_starts_with|str_contains|str_ends_with|strcasecmp|strcmp)\s*\(\s*(\(string\)\s*)?\$_(POST|GET|REQUEST|SERVER)\[[^]]*\]\s*,[^)]*\)//g' \
                   -e 's/\$_(POST|GET|REQUEST|SERVER)\[[^]]*\]\s*[!=]==//g' \
                   -e 's/[!=]==\s*\$_(POST|GET|REQUEST|SERVER)\[[^]]*\]//g')
               echo "$remaining" | grep -qE '\$_(POST|GET|REQUEST|SERVER)\[' || continue
@@ -424,6 +521,24 @@ jobs:
               # Fully static SQL: the only interpolation is the table prefix.
               dynamic=$(echo "$statement" | sed -E -e 's/^.*->(query|get_results|get_row|get_var|get_col)\s*\(//' -e 's/\{?\$(this->)?wpdb->[A-Za-z_]+\}?//g')
               echo "$dynamic" | grep -qE '\$[A-Za-z_]' || continue
+              # Query held in a variable: judge the string it was built from instead.
+              built=""
+              if [ -n "$query_var" ]; then
+                  built=$(sed -n "$(( line > 40 ? line - 40 : 1 )),$((line - 1))p" "$file" 2>/dev/null | grep -E "^\s*\\${query_var}\s*=\s*['\"]" | tail -1 || true)
+                  [ -n "$built" ] && dynamic=$(echo "$built" | sed -E -e 's/^[^=]*=//' -e 's/\{?\$(this->)?wpdb->[A-Za-z_]+\}?//g')
+              fi
+              # Variables that cannot carry user input: table names (identifiers cannot be prepared
+              # before WP 6.2) and ID lists cast to integers, e.g. implode( ',', array_map( 'absint', $ids ) ).
+              context=$(sed -n "$(( line > 40 ? line - 40 : 1 )),${line}p" "$file" 2>/dev/null)
+              unsafe=0
+              for v in $(echo "$dynamic" | grep -oE '\$[A-Za-z_][A-Za-z0-9_]*' | sort -u); do
+                  name="${v#\$}"
+                  echo "$name" | grep -qiE '^(table|tbl|tablename|[a-z0-9_]*_table|table_[a-z0-9_]*name)$' && continue
+                  echo "$context" | grep -qE "\\\$$name\s*=\s*(\\\$(this->)?wpdb->(prefix|base_prefix)|[A-Za-z_\\\\]+::[A-Za-z_]*table[A-Za-z_]*\s*\(|implode\s*\(\s*['\"],\s*['\"]\s*,\s*array_map\s*\(\s*['\"](absint|intval)['\"]|absint\s*\(|\(int\)|intval\s*\(|wp_parse_id_list\s*\()" && continue
+                  unsafe=1
+                  break
+              done
+              [ "$unsafe" -eq 0 ] && continue
               add_finding "BLOCKER" "Security-SQL" "$file" "$line" "Direct DB query possibly without \$wpdb->prepare(): ${content:0:100}" "Use \$wpdb->prepare() for all queries with variables"
           done < <(grep -rnE '\$wpdb->(query|get_results|get_row|get_var|get_col)\s*\(' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ | grep '\$' || true)
 
@@ -443,7 +558,14 @@ jobs:
 
           while IFS= read -r file; do
               skip_path "$file" && continue
-              has_guard=$(head -20 "$file" | grep -cE "defined\s*\(\s*['\"]ABSPATH['\"]" || true)
+              # The guard may follow a long file docblock, namespace and use statements; it only has
+              # to come before the first class / function declaration.
+              guard_at=$(head -150 "$file" | grep -nE "defined\s*\(\s*['\"](ABSPATH|WPINC)['\"]" | head -1 | cut -d: -f1 || true)
+              decl_at=$(grep -nE '^\s*((abstract|final|readonly)\s+)*(class|interface|trait|enum|function)\s' "$file" | head -1 | cut -d: -f1 || true)
+              has_guard=0
+              if [ -n "$guard_at" ] && { [ -z "$decl_at" ] || [ "$guard_at" -lt "$decl_at" ]; }; then
+                  has_guard=1
+              fi
               if [ "${has_guard:-0}" -eq 0 ]; then
                   # Code lines, ignoring the open/close tags, comments and blank lines.
                   first_code=$(awk '{ gsub(/<\?php|\?>/, "") } /^[[:space:]]*(\/\/|#|\/?\*)/ || /^[[:space:]]*$/ { next } { print; exit }' "$file" 2>/dev/null || true)
@@ -556,8 +678,13 @@ jobs:
 
           echo -e "\n=== Category 9: Localhost ===" >&2
 
+          # Code that recognises a local host (in_array / preg_match / === against a host) is fine;
+          # so are single-line compiled bundles, where the hit is usually library code.
           while IFS=: read -r file line content; do
               skip_path "$file" && continue
+              is_comment "$content" && continue
+              echo "$content" | grep -qE "(in_array|preg_match|str_ends_with|str_contains|strpos|stripos)\s*\(|[!=]==\s*['\"](localhost|127\.0\.0\.1)|(localhost|127\.0\.0\.1)['\"]\s*[!=]==" && continue
+              [ "$line" = "1" ] && [ "$(wc -l < "$file" 2>/dev/null || echo 0)" -le 3 ] && [[ "$file" == *.js ]] && continue
               add_finding "WARNING" "Localhost" "$file" "$line" "Localhost/dev reference found: ${content:0:80}" "Remove before production release"
           done < <(grep -rnIE "(localhost|127\.0\.0\.1)" "$PLUGIN_DIR" --include="*.php" --include="*.js" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ | grep -v "*.min.js" || true)
 
@@ -601,7 +728,7 @@ jobs:
           while IFS=: read -r file line content; do
               skip_path "$file" && continue
               add_finding "WARNING" "Headway-Widget" "$file" "$line" "Headway changelog widget loads external CDN; needs disclosure" "Add to readme == External services == OR make opt-in"
-          done < <(grep -rnE "(headway|headwayapp\.co|HW_widget)" "$PLUGIN_DIR" --include="*.php" --include="*.js" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+          done < <(grep -rnE "(headwayapp\.co|HW_config|HW_widget|Headway\.init)" "$PLUGIN_DIR" --include="*.php" --include="*.js" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
 
           # ─── Shared data for the repo-level checks below ───
@@ -635,11 +762,6 @@ jobs:
           if [ -z "$TEXT_DOMAIN" ] && [ -n "$MAIN_PHP" ]; then
               TEXT_DOMAIN=$(awk 'tolower($0) ~ /text domain:/ { sub(/.*[Tt]ext [Dd]omain:/, ""); gsub(/[[:space:]\r]/, ""); print; exit }' "$MAIN_PHP" || true)
           fi
-
-          is_comment() {
-              local trimmed="${1#"${1%%[![:space:]]*}"}"
-              [[ "$trimmed" == //* || "$trimmed" == \** || "$trimmed" == /\** || "$trimmed" == \#* ]]
-          }
 
           PY=""
           for cand in python3 python; do
@@ -853,7 +975,7 @@ jobs:
               skip_path "$file" && continue
               is_comment "$content" && continue
               add_finding "WARNING" "Plugin-Install" "$file" "$line" "Installs or activates another plugin: ${content:0:100}" "Only allowed as a direct user action (button click) with nonce + capability checks; prefer the Requires Plugins header or a link to the core plugin installer"
-          done < <(grep -rnIE '(^|[^A-Za-z0-9_>:$])(activate_plugins?)[[:space:]]*\(|new[[:space:]]+(\\)?Plugin_Upgrader|(^|[^A-Za-z0-9_>:$])plugins_api[[:space:]]*\(' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
+          done < <(grep -rnIE '(^|[^A-Za-z0-9_>:$])(activate_plugins?)[[:space:]]*\(|new[[:space:]]+(\\)?Plugin_Upgrader' "$PLUGIN_DIR" --include="*.php" 2>/dev/null | grep -v vendor/ | grep -v node_modules/ || true)
 
           # Free code that detects Pro (class_exists / defined / function_exists / is_plugin_active).
           while IFS=: read -r file line content; do
@@ -1789,10 +1911,11 @@ jobs:
           The free plugin must be fully functional on its own. Paid features live in the Pro add-on.
           BLOCKER when the free plugin:
           - Checks a license, `is_pro`, `isPro`, `license_status`, `is_premium`, `can_use_premium`, or
-            similar before running a feature.
+            similar and then stops, skips or limits FREE code (`if ( ! is_pro() ) return;`, a lower
+            row/column limit for free users, a free feature that only runs when licensed).
           - Detects Pro with `class_exists( '...Pro...' )`, `defined( '..._PRO_...' )`,
-            `function_exists( '..._pro_...' )`, `is_plugin_active( '...-pro/...' )` and then enables,
-            disables or changes behaviour based on it.
+            `function_exists( '..._pro_...' )`, `is_plugin_active( '...-pro/...' )` and then disables
+            or limits behaviour that ships in the free plugin.
           - Contains backend code for a paid feature (save handler, AJAX/REST endpoint, cron job,
             render logic, or the JS that performs the feature) that only works when Pro is present.
           - Saves a setting in the free plugin that the free plugin never reads or applies.
@@ -1800,7 +1923,13 @@ jobs:
             The default must be free's real working value.
           Allowed (do NOT flag): locked UI in React/Vue (badge, disabled control, upsell popup) when
           the free plugin has no backend for that feature; `apply_filters()` / `do_action()` hooks that
-          Pro attaches to; passing a display-only pro flag to JS via `wp_localize_script()`.
+          Pro attaches to; passing a display-only pro flag to JS via `wp_localize_script()` or a
+          template (array values, `$is_pro = ...`, a `pro_feature` CSS class); a helper that only
+          returns whether Pro is active (`return function_exists( 'x_pro' ) && x_pro()->license_status;`);
+          hand-over branches where the Pro side calls the Pro plugin's own code and free keeps working
+          (`if ( is_pro_active() ) { x_pro()->render(); } else { $this->render(); }`, or
+          `$helpers = is_pro_active() ? x_pro()->helpers : $this->helpers`); "if not Pro" branches that
+          only add an Upgrade menu or notice; version/compatibility checks against the installed Pro.
 
           ## 2. Guideline 6: Serviceware and external services
 
@@ -1873,9 +2002,14 @@ jobs:
 
           ## 5. What is NOT a problem (avoid false positives)
 
-          - `isset()` / `empty()` checks and strict comparisons (`===`) on superglobals.
+          - `isset()` / `empty()` / `is_array()` / `is_string()` checks, `unset()`, and strict
+            comparisons (`===`, `0 === stripos( $_SERVER[...], 'basic ' )`) on superglobals when the
+            value is sanitized before it is used (e.g. on the next line).
           - Queries that use `$wpdb->prepare()` (even when it is on the next line) or only interpolate
-            `$wpdb->prefix` / `$wpdb->posts` style table names.
+            table names (`$wpdb->prefix . 'x'`, `$table`, `$table_name`) or ID lists cast to integers
+            (`implode( ',', array_map( 'absint', $ids ) )`).
+          - An ABSPATH guard placed after the file docblock / namespace / use lines, as long as it
+            comes before the first class or function.
           - Method names that merely contain words like `is_process_running` or `process`.
           - Code in tests, build tooling, vendor or node_modules.
           - `apply_filters()` defaults that are the free plugin's real working value.

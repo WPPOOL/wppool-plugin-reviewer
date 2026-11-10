@@ -253,7 +253,7 @@ curl -fsSL https://raw.githubusercontent.com/WPPOOL/wppool-plugin-reviewer/maste
 
 4. (Recommended) In repo Settings → Branches → Branch protection rules, add "compliance / Compliance Gate" as required status check
 
-No tokens, secrets or deploy keys are needed. The workflow scans every commit pushed to any branch, every pull request (with a findings comment), and manual runs (Actions → WP.org Compliance → Run workflow). Each run shows a readable report on its Summary page; the raw files are under Artifacts (`compliance-report`, `phpcs-report`).
+No tokens, secrets or deploy keys are needed. The workflow scans every push to `develop`, `main`, `master` and `compliance`, every pull request (with a findings comment), and manual runs (Actions → WP.org Compliance → Run workflow). Each run shows a readable report on its Summary page; the raw files are under Artifacts (`compliance-report`, `phpcs-report`).
 
 ### AI Review (every commit)
 
@@ -426,7 +426,7 @@ To make the check mandatory (block merge on failure):
 2. Add/edit branch protection rule for `main`/`master`
 3. Check "Require status checks to pass before merging"
 4. Search and add "compliance / Compliance Gate"
-5. Save changes
+5. Save changes 
 
 Now PRs with WP.org violations cannot be merged.
 
