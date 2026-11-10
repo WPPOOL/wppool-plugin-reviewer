@@ -14,7 +14,8 @@
 #
 # Setup:
 #   1. Copy this file to .github/workflows/wporg-compliance.yml
-#   2. Update plugin-text-domain below to match your plugin slug
+#   2. Nothing else to edit: text domain is read from the plugin header.
+#      Runs on push to develop, master and compliance, on PRs, weekly, or manually.
 #   3. Add a GEMINI_API_KEY (or ANTHROPIC_API_KEY) secret to enable the AI review
 #   4. Enable "Require status checks" in repo branch protection rules
 #      and add "compliance / Compliance Gate" as required check
@@ -35,23 +36,9 @@ on:
   schedule:
     - cron: '0 3 * * 1'   # full AI audit every Monday 03:00 UTC (runs on the default branch)
   push:
-    branches: ['**']   # every commit pushed to any branch
-    paths:
-      - '.github/workflows/wporg-compliance.yml'
-      - '**.php'
-      - '**.js'
-      - '**.jsx'
-      - '**.ts'
-      - '**.tsx'
-      - '**.vue'
-      - 'readme.txt'
-      - 'readme.md'
-      - 'composer.json'
-      - 'composer.lock'
-      - 'package.json'
-      - '.distignore'
+    branches: [develop, main, master, compliance]   # compliance = branch for testing this check
   pull_request:
-    branches: [main, master, develop]
+    branches: [main, master, develop, compliance]
     paths:
       - '**.php'
       - '**.js'
@@ -78,7 +65,7 @@ jobs:
     with:
       plugin-dir: '.'                    # Change if plugin is in subdirectory
       php-version: '8.0'                 # Match your plugin's minimum PHP
-      plugin-text-domain: 'your-plugin'  # ← CHANGE THIS to your plugin slug
+      plugin-text-domain: ''             # optional: empty = read from the plugin header (Text Domain:)
       fail-on-warnings: false            # Set true to also block on warnings
       full-audit: ${{ inputs.full-audit == true }}  # scheduled runs always audit everything
       ai-provider: 'auto'                # auto | gemini | openai | claude (auto = first key found: Claude, OpenAI, Gemini)
