@@ -26,10 +26,11 @@ practice. Apply them strictly but precisely.
 The free plugin must be fully functional on its own. Paid features live in the Pro add-on.
 BLOCKER when the free plugin:
 - Checks a license, `is_pro`, `isPro`, `license_status`, `is_premium`, `can_use_premium`, or
-  similar before running a feature.
+  similar and then stops, skips or limits FREE code (`if ( ! is_pro() ) return;`, a lower
+  row/column limit for free users, a free feature that only runs when licensed).
 - Detects Pro with `class_exists( '...Pro...' )`, `defined( '..._PRO_...' )`,
-  `function_exists( '..._pro_...' )`, `is_plugin_active( '...-pro/...' )` and then enables,
-  disables or changes behaviour based on it.
+  `function_exists( '..._pro_...' )`, `is_plugin_active( '...-pro/...' )` and then disables
+  or limits behaviour that ships in the free plugin.
 - Contains backend code for a paid feature (save handler, AJAX/REST endpoint, cron job,
   render logic, or the JS that performs the feature) that only works when Pro is present.
 - Saves a setting in the free plugin that the free plugin never reads or applies.
@@ -37,7 +38,13 @@ BLOCKER when the free plugin:
   The default must be free's real working value.
 Allowed (do NOT flag): locked UI in React/Vue (badge, disabled control, upsell popup) when
 the free plugin has no backend for that feature; `apply_filters()` / `do_action()` hooks that
-Pro attaches to; passing a display-only pro flag to JS via `wp_localize_script()`.
+Pro attaches to; passing a display-only pro flag to JS via `wp_localize_script()` or a
+template (array values, `$is_pro = ...`, a `pro_feature` CSS class); a helper that only
+returns whether Pro is active (`return function_exists( 'x_pro' ) && x_pro()->license_status;`);
+hand-over branches where the Pro side calls the Pro plugin's own code and free keeps working
+(`if ( is_pro_active() ) { x_pro()->render(); } else { $this->render(); }`, or
+`$helpers = is_pro_active() ? x_pro()->helpers : $this->helpers`); "if not Pro" branches that
+only add an Upgrade menu or notice; version/compatibility checks against the installed Pro.
 
 ## 2. Guideline 6: Serviceware and external services
 
@@ -110,9 +117,14 @@ BLOCKER:
 
 ## 5. What is NOT a problem (avoid false positives)
 
-- `isset()` / `empty()` checks and strict comparisons (`===`) on superglobals.
+- `isset()` / `empty()` / `is_array()` / `is_string()` checks, `unset()`, and strict
+  comparisons (`===`, `0 === stripos( $_SERVER[...], 'basic ' )`) on superglobals when the
+  value is sanitized before it is used (e.g. on the next line).
 - Queries that use `$wpdb->prepare()` (even when it is on the next line) or only interpolate
-  `$wpdb->prefix` / `$wpdb->posts` style table names.
+  table names (`$wpdb->prefix . 'x'`, `$table`, `$table_name`) or ID lists cast to integers
+  (`implode( ',', array_map( 'absint', $ids ) )`).
+- An ABSPATH guard placed after the file docblock / namespace / use lines, as long as it
+  comes before the first class or function.
 - Method names that merely contain words like `is_process_running` or `process`.
 - Code in tests, build tooling, vendor or node_modules.
 - `apply_filters()` defaults that are the free plugin's real working value.
